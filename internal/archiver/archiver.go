@@ -283,21 +283,24 @@ func buildSelectStmt(table string, columns string, where string, limit uint) (st
 
 // buildInsertStmt
 //  INSERT /* go-mysql-archiver */ INTO `tb` (`c1`, `c2`, `c3`, ...) VALUES (?, ?, ?, ...), (?, ?, ?, ...), ...
-func buildInsertStmt(table string, columns string, placeholderSet *string) (stmt *string) {
-	*stmt = fmt.Sprintf("INSERT /* go-mysql-archiver */ INTO `%s` (%s) VALUES %s", table, columns, *placeholderSet)
+func buildInsertStmt(table string, columns string, placeholderSets *string) (stmt *string) {
+	s := fmt.Sprintf("INSERT /* go-mysql-archiver */ INTO `%s` (%s) VALUES %s", table, columns, *placeholderSets)
+	stmt = &s
 	return
 }
 
 // buildUniqueIndexDeleteStmt
 //  DELETE /* go-mysql-archiver */ FROM `tb` WHERE (`c1`, `c2`, ...) IN ((?, ?, ...), (?, ?, ...), ...)
 func buildUniqueIndexDeleteStmt(table string, ukColumns string, ukPlaceholderSets *string) (stmt *string) {
-	*stmt = fmt.Sprintf("DELETE /* go-mysql-archiver */ FROM `%s` WHERE (%s) IN (%s)", table, ukColumns, *ukPlaceholderSets)
+	s := fmt.Sprintf("DELETE /* go-mysql-archiver */ FROM `%s` WHERE (%s) IN (%s)", table, ukColumns, *ukPlaceholderSets)
+	stmt = &s
 	return
 }
 
 // buildEntireMatchDeleteStmt
 //  DELETE /* go-mysql-archiver */ FROM `tb` WHERE (`c1`, `c2`, `c3`, ...) IN ((?, ?, ?, ...), (?, ?, ?, ...), ...) LIMIT 1000
 func buildEntireMatchDeleteStmt(table string, columns string, placeholderSets *string, limit uint) (stmt *string) {
-	*stmt = fmt.Sprintf("DELETE /* go-mysql-archiver */ FROM `%s` WHERE (%s) IN (%s) LIMIT %d", table, columns, *placeholderSets, limit)
+	s := fmt.Sprintf("DELETE /* go-mysql-archiver */ FROM `%s` WHERE (%s) IN (%s) LIMIT %d", table, columns, *placeholderSets, limit)
+	stmt = &s
 	return
 }

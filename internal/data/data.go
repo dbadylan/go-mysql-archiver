@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+
 	"github.com/dbadylan/go-archiver/internal/config"
 
 	_ "github.com/go-sql-driver/mysql"
@@ -27,10 +28,12 @@ func GetColumnNames(db *sqlx.DB, database string, table string) (columnNames []s
                 WHERE TABLE_SCHEMA = ?
                 AND TABLE_NAME = ?
                 AND EXTRA NOT IN ('VIRTUAL GENERATED', 'STORED GENERATED')`
+
 	if e := db.Select(&columnNames, query, database, table); e != nil {
 		err = errors.New(e.Error())
 		return
 	}
+
 	return
 }
 
@@ -58,12 +61,14 @@ FROM (
     GROUP BY s.INDEX_NAME
 ) t
 WHERE is_nullable = 'NO'`
+
 	rows, e := db.Queryx(query, database, table)
 	if e != nil {
 		err = errors.New(e.Error())
 		return
 	}
 	defer func() { _ = rows.Close() }()
+
 	uniqueKeys = make(map[string]IndexColumn)
 	for rows.Next() {
 		var (
@@ -86,6 +91,7 @@ WHERE is_nullable = 'NO'`
 		}
 		uniqueKeys[indexName] = indexColumn
 	}
+
 	return
 }
 
@@ -104,6 +110,7 @@ func CheckSelectStmt(db *sqlx.DB, table string, query string) (rowsEstimate int6
 		Filtered     sql.NullFloat64 `db:"filtered"`
 		Extra        sql.NullString  `db:"Extra"`
 	}
+
 	rows, e := db.Queryx("EXPLAIN " + query)
 	if e != nil {
 		err = errors.New(e.Error())
@@ -121,16 +128,20 @@ func CheckSelectStmt(db *sqlx.DB, table string, query string) (rowsEstimate int6
 			continue
 		}
 		rowsEstimate = explain.Rows.Int64
+		break
 	}
+
 	return
 }
 
 func CheckTargetTable(db *sqlx.DB, database string, table string) (count int, err error) {
 	query := "SELECT /* go-mysql-archiver */ COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+
 	if e := db.QueryRowx(query, database, table).Scan(&count); e != nil {
 		err = errors.New(e.Error())
 		return
 	}
+
 	return
 }
 
@@ -141,6 +152,7 @@ func GetValues(db *sqlx.DB, query string, ukColPositions []int) (values []interf
 		return
 	}
 	defer func() { _ = rows.Close() }()
+
 	for rows.Next() {
 		vals, e := rows.SliceScan()
 		if e != nil {
@@ -153,6 +165,7 @@ func GetValues(db *sqlx.DB, query string, ukColPositions []int) (values []interf
 		}
 		rowsFetched++
 	}
+
 	return
 }
 
@@ -168,17 +181,3 @@ func ExecuteDMLStmt(tx *sqlx.Tx, query *string, values []interface{}) (rowsAffec
 	}
 	return
 }
-
-// func ExecuteInsert(db *sqlx.DB, insertStmt *string, values []interface{}) (rowsAffected int64, err error) {
-// 	result, e := db.Exec(*insertStmt, values...)
-// 	if e != nil {
-// 		err = errors.New(e.Error())
-// 		return
-// 	}
-// 	rowsAffected, e = result.RowsAffected()
-// 	if e != nil {
-// 		err = errors.New(e.Error())
-// 		return
-// 	}
-// 	return
-// }
