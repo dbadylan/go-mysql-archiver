@@ -3,7 +3,6 @@ package data
 import (
 	"database/sql"
 	"encoding/json"
-	"errors"
 	"fmt"
 
 	"github.com/dbadylan/go-archiver/internal/config"
@@ -12,14 +11,13 @@ import (
 	"github.com/jmoiron/sqlx"
 )
 
-func NewConn(m config.MySQL) (*sqlx.DB, error) {
-	db, e := sqlx.Connect("mysql", fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&interpolateParams=true", m.Username, m.Password, m.Host, m.Port, m.Database, m.Charset))
-	if e != nil {
-		return nil, errors.New(e.Error())
+func NewConn(m config.MySQL) (db *sqlx.DB, err error) {
+	if db, err = sqlx.Connect("mysql", fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&interpolateParams=true", m.Username, m.Password, m.Host, m.Port, m.Database, m.Charset)); err != nil {
+		return
 	}
 	db.SetMaxIdleConns(2)
 	db.SetMaxOpenConns(2)
-	return db, nil
+	return
 }
 
 func GetColumnNames(db *sqlx.DB, database string, table string) (columnNames []string, err error) {
@@ -28,12 +26,7 @@ func GetColumnNames(db *sqlx.DB, database string, table string) (columnNames []s
                 WHERE TABLE_SCHEMA = ?
                 AND TABLE_NAME = ?
                 AND EXTRA NOT IN ('VIRTUAL GENERATED', 'STORED GENERATED')`
-
-	if e := db.Select(&columnNames, query, database, table); e != nil {
-		err = errors.New(e.Error())
-		return
-	}
-
+	err = db.Select(&columnNames, query, database, table)
 	return
 }
 
@@ -62,9 +55,8 @@ FROM (
 ) t
 WHERE is_nullable = 'NO'`
 
-	rows, e := db.Queryx(query, database, table)
-	if e != nil {
-		err = errors.New(e.Error())
+	var rows *sqlx.Rows
+	if rows, err = db.Queryx(query, database, table); err != nil {
 		return
 	}
 	defer func() { _ = rows.Close() }()
@@ -77,16 +69,13 @@ WHERE is_nullable = 'NO'`
 			columnPositionsRaw []byte
 			indexColumn        IndexColumn
 		)
-		if e = rows.Scan(&indexName, &columnNamesRaw, &columnPositionsRaw); e != nil {
-			err = errors.New(e.Error())
+		if err = rows.Scan(&indexName, &columnNamesRaw, &columnPositionsRaw); err != nil {
 			return
 		}
-		if e = json.Unmarshal(columnNamesRaw, &indexColumn.Names); e != nil {
-			err = errors.New(e.Error())
+		if err = json.Unmarshal(columnNamesRaw, &indexColumn.Names); err != nil {
 			return
 		}
-		if e = json.Unmarshal(columnPositionsRaw, &indexColumn.Positions); e != nil {
-			err = errors.New(e.Error())
+		if err = json.Unmarshal(columnPositionsRaw, &indexColumn.Positions); err != nil {
 			return
 		}
 		uniqueKeys[indexName] = indexColumn
@@ -111,17 +100,15 @@ func CheckSelectStmt(db *sqlx.DB, table string, query string) (rowsEstimate int6
 		Extra        sql.NullString  `db:"Extra"`
 	}
 
-	rows, e := db.Queryx("EXPLAIN " + query)
-	if e != nil {
-		err = errors.New(e.Error())
+	var rows *sqlx.Rows
+	if rows, err = db.Queryx("EXPLAIN " + query); err != nil {
 		return
 	}
 	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
 		explain := new(Explain)
-		if e = rows.StructScan(explain); e != nil {
-			err = errors.New(e.Error())
+		if err = rows.StructScan(explain); err != nil {
 			return
 		}
 		if explain.Table.String != table {
@@ -136,48 +123,37 @@ func CheckSelectStmt(db *sqlx.DB, table string, query string) (rowsEstimate int6
 
 func CheckTargetTable(db *sqlx.DB, database string, table string) (count int, err error) {
 	query := "SELECT /* go-mysql-archiver */ COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
-
-	if e := db.QueryRowx(query, database, table).Scan(&count); e != nil {
-		err = errors.New(e.Error())
-		return
-	}
-
+	err = db.QueryRowx(query, database, table).Scan(&count)
 	return
 }
 
-func GetValues(db *sqlx.DB, query string, ukColPositions []int) (values []interface{}, ukValues []interface{}, rowsFetched uint, err error) {
-	rows, e := db.Queryx(query)
-	if e != nil {
-		err = errors.New(e.Error())
+func GetValues(db *sqlx.DB, query string, ukColPositions []int) (values []interface{}, ukValues []interface{}, rowQuantity int64, err error) {
+	var rows *sqlx.Rows
+	if rows, err = db.Queryx(query); err != nil {
 		return
 	}
 	defer func() { _ = rows.Close() }()
 
 	for rows.Next() {
-		vals, e := rows.SliceScan()
-		if e != nil {
-			err = errors.New(e.Error())
+		var vals []interface{}
+		if vals, err = rows.SliceScan(); err != nil {
 			return
 		}
 		values = append(values, vals...)
 		for _, ukColPosition := range ukColPositions {
-			ukValues = append(ukValues, values[ukColPosition])
+			ukValues = append(ukValues, vals[ukColPosition])
 		}
-		rowsFetched++
+		rowQuantity++
 	}
 
 	return
 }
 
 func ExecuteDMLStmt(tx *sqlx.Tx, query *string, values []interface{}) (rowsAffected int64, err error) {
-	result, e := tx.Exec(*query, values...)
-	if e != nil {
-		err = errors.New(e.Error())
+	var result sql.Result
+	if result, err = tx.Exec(*query, values...); err != nil {
 		return
 	}
-	if rowsAffected, e = result.RowsAffected(); e != nil {
-		err = errors.New(e.Error())
-		return
-	}
+	rowsAffected, err = result.RowsAffected()
 	return
 }

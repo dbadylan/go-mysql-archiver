@@ -6,6 +6,8 @@ import (
 	"time"
 )
 
+const TimeFormat = "2006-01-02 15:04:05"
+
 type MySQL struct {
 	Host     string
 	Port     uint16
@@ -28,11 +30,11 @@ type Target struct {
 }
 
 type Config struct {
-	Source   Source
-	Target   Target
-	Quiet    bool
-	Interval time.Duration
-	Sleep    time.Duration
+	Source     Source
+	Target     Target
+	Progress   time.Duration
+	Sleep      time.Duration
+	Statistics bool
 }
 
 func NewFlag() (cfg *Config, err error) {
@@ -54,9 +56,9 @@ func NewFlag() (cfg *Config, err error) {
 	tgtCharset := flag.String("tgt.charset", "", "target mysql charset, if unspecified, it defaults to the source charset")
 	tgtTable := flag.String("tgt.table", "", "target mysql table, if unspecified, it defaults to the source table")
 
-	quiet := flag.Bool("quiet", false, "do not print any output")
-	interval := flag.Duration("interval", 5*time.Second, "time interval for printing statistics, such as 10s, 1m, etc")
-	sleep := flag.Duration("sleep", 100*time.Millisecond, "time interval for fetching rows, such as 0, 500ms, 1s, etc")
+	progress := flag.Duration("progress", 5*time.Second, "time interval for printing progress, such as 10s, 1m, etc, 0 means disable")
+	sleep := flag.Duration("sleep", 100*time.Millisecond, "time interval for fetching rows, such as 0, 500ms, 1s, etc, 0 means disable")
+	statistics := flag.Bool("statistics", false, "print statistics after task has finished")
 
 	flag.Parse()
 
@@ -89,8 +91,8 @@ func NewFlag() (cfg *Config, err error) {
 	if *tgtCharset == "" {
 		tgtCharset = srcCharset
 	}
-	if *interval < time.Second {
-		err = errors.New("interval must be larger than 1s")
+	if *progress < time.Second {
+		err = errors.New("progress must be larger than 1s")
 		return
 	}
 	if *sleep != 0 && *sleep < time.Millisecond {
@@ -126,9 +128,9 @@ func NewFlag() (cfg *Config, err error) {
 			},
 			Table: *tgtTable,
 		},
-		Quiet:    *quiet,
-		Interval: *interval,
-		Sleep:    *sleep,
+		Progress:   *progress,
+		Sleep:      *sleep,
+		Statistics: *statistics,
 	}
 
 	return

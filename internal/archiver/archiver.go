@@ -2,8 +2,8 @@ package archiver
 
 import (
 	"bytes"
-	"errors"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -12,75 +12,44 @@ import (
 )
 
 func Run(cfg *config.Config) (err error) {
-	var (
-		rowsAffected  int64
-		rowsEstimated int64
-		errorChan     = make(chan error, 1)
-		infoChan      = make(chan string, 1)
-		exitChan      = make(chan struct{}, 1)
-		interval      = time.NewTicker(cfg.Interval)
-	)
-	defer func() { exitChan <- struct{}{} }()
-	go func() {
-		for {
-			select {
-			case e := <-errorChan:
-				fmt.Printf("%+v\n", e)
-			case i := <-infoChan:
-				if cfg.Quiet {
-					continue
-				}
-				fmt.Printf("[%s] %s\n", time.Now().Local().Format("2006-01-02 15:04:05"), i)
-			case t := <-interval.C:
-				if cfg.Quiet {
-					continue
-				}
-				fmt.Printf("[%s] progress: %d/%d\n", t.Local().Format("2006-01-02 15:04:05"), rowsAffected, rowsEstimated)
-			case <-exitChan:
-				return
-			}
-		}
-	}()
+	sTime := time.Now().Local()
 
 	srcConn, e1 := data.NewConn(cfg.Source.MySQL)
 	if e1 != nil {
-		errorChan <- e1
+		err = e1
 		return
 	}
 	defer func() { _ = srcConn.Close() }()
-	infoChan <- fmt.Sprintf("source database: %s@%s:%d", cfg.Source.Database, cfg.Source.Host, cfg.Source.Port)
 
 	tgtConn, e2 := data.NewConn(cfg.Target.MySQL)
 	if e2 != nil {
-		errorChan <- e2
+		err = e2
 		return
 	}
 	defer func() { _ = tgtConn.Close() }()
-	infoChan <- fmt.Sprintf("target database: %s@%s:%d", cfg.Target.Database, cfg.Target.Host, cfg.Target.Port)
 
 	columnNames, e3 := data.GetColumnNames(srcConn, cfg.Source.MySQL.Database, cfg.Source.Table)
 	if e3 != nil {
-		errorChan <- e3
+		err = e3
 		return
 	}
 	if len(columnNames) == 0 {
-		errorChan <- errors.New("source table not found")
+		err = fmt.Errorf("source table `%s` not found", cfg.Source.Table)
 		return
 	}
 	columns, placeholderSet := buildColumnsAndPlaceholderSet(columnNames)
 
 	selectStmt := buildSelectStmt(cfg.Source.Table, columns, cfg.Source.Where, cfg.Source.Limit)
 
-	rowsEstimated, e3 = data.CheckSelectStmt(srcConn, cfg.Source.Table, selectStmt)
-	if e3 != nil {
-		errorChan <- e3
+	rowsEstimated, e4 := data.CheckSelectStmt(srcConn, cfg.Source.Table, selectStmt)
+	if e4 != nil {
+		err = e4
 		return
 	}
-	infoChan <- fmt.Sprintf("source table: %s, where clause: %s, estimate rows: %d", cfg.Source.Table, cfg.Source.Where, rowsEstimated)
 
-	uniqueKeys, e4 := data.GetUniqueKeyColumns(srcConn, cfg.Source.MySQL.Database, cfg.Source.Table)
-	if e4 != nil {
-		errorChan <- e4
+	uniqueKeys, e5 := data.GetUniqueKeyColumns(srcConn, cfg.Source.MySQL.Database, cfg.Source.Table)
+	if e5 != nil {
+		err = e5
 		return
 	}
 	ukName := "PRIMARY"
@@ -92,22 +61,38 @@ func Run(cfg *config.Config) (err error) {
 		}
 	}
 	ukColumns, ukPlaceholderSet := buildColumnsAndPlaceholderSet(ukColumn.Names)
-	if ukExists {
-		infoChan <- fmt.Sprintf("use non-null unique key: %s", ukName)
-	} else {
-		infoChan <- "non-null unique key not found"
-	}
 
-	tgtTableCount, e5 := data.CheckTargetTable(tgtConn, cfg.Target.Database, cfg.Target.Table)
-	if e5 != nil {
-		errorChan <- e5
+	tgtTableCount, e6 := data.CheckTargetTable(tgtConn, cfg.Target.Database, cfg.Target.Table)
+	if e6 != nil {
+		err = e6
 		return
 	}
 	if tgtTableCount != 1 {
-		errorChan <- errors.New("target table not found")
+		err = fmt.Errorf("target table `%s` not found", cfg.Target.Table)
 		return
 	}
-	infoChan <- fmt.Sprintf("target table: %s", cfg.Target.Table)
+
+	var (
+		rowsSelect int64
+		rowsInsert int64
+		rowsDelete int64
+		exitChan   = make(chan struct{}, 1)
+	)
+	defer func() { exitChan <- struct{}{} }()
+	if cfg.Progress != 0 {
+		go func() {
+			ticker := time.NewTicker(cfg.Progress)
+			defer ticker.Stop()
+			for {
+				select {
+				case ts := <-ticker.C:
+					fmt.Printf("[%s] progress: %d/%d\n", ts.Local().Format(config.TimeFormat), rowsSelect, rowsEstimated)
+				case <-exitChan:
+					return
+				}
+			}
+		}()
+	}
 
 	var (
 		insertStmt *string
@@ -116,20 +101,20 @@ func Run(cfg *config.Config) (err error) {
 		lastLoop   = false
 	)
 	for {
-		values, ukValues, rowsFetched, e1 := data.GetValues(srcConn, selectStmt, ukColumn.Positions)
+		values, ukValues, rowQuantity, e1 := data.GetValues(srcConn, selectStmt, ukColumn.Positions)
 		if e1 != nil {
-			errorChan <- e1
+			err = e1
+			return
+		}
+		if rowQuantity == 0 {
 			break
 		}
-		if rowsFetched == 0 {
-			break
-		}
-		if rowsFetched < cfg.Source.Limit {
+		if rowQuantity < int64(cfg.Source.Limit) {
 			lastLoop = true
 		}
 
 		if firstLoop || lastLoop {
-			placeholderSets, ukPlaceholderSets := buildPlaceholders(placeholderSet, ukPlaceholderSet, rowsFetched)
+			placeholderSets, ukPlaceholderSets := buildPlaceholders(placeholderSet, ukPlaceholderSet, rowQuantity)
 			insertStmt = buildInsertStmt(cfg.Target.Table, columns, placeholderSets)
 			if ukExists {
 				deleteStmt = buildUniqueIndexDeleteStmt(cfg.Source.Table, ukColumns, ukPlaceholderSets)
@@ -141,68 +126,67 @@ func Run(cfg *config.Config) (err error) {
 
 		srcTx, e2 := srcConn.Beginx()
 		if e2 != nil {
-			errorChan <- e2
-			break
+			err = e2
+			return
 		}
 		tgtTx, e3 := tgtConn.Beginx()
 		if e3 != nil {
-			errorChan <- e3
-			break
+			err = e3
+			return
 		}
 
 		var (
 			waitGrp sync.WaitGroup
 			inserts int64
 			deletes int64
-			success = true
+			errs    []string
 		)
 
 		waitGrp.Add(1)
 		go func() {
 			defer waitGrp.Done()
-			var err error
-			if inserts, err = data.ExecuteDMLStmt(tgtTx, insertStmt, values); err != nil {
-				errorChan <- err
-				success = false
+			var e error
+			if inserts, e = data.ExecuteDMLStmt(tgtTx, insertStmt, values); e != nil {
+				errs = append(errs, e.Error())
 			}
 		}()
 
 		waitGrp.Add(1)
 		go func() {
 			defer waitGrp.Done()
-			var err error
+			var e error
 			if ukExists {
-				deletes, err = data.ExecuteDMLStmt(srcTx, deleteStmt, ukValues)
+				deletes, e = data.ExecuteDMLStmt(srcTx, deleteStmt, ukValues)
 			} else {
-				deletes, err = data.ExecuteDMLStmt(srcTx, deleteStmt, values)
+				deletes, e = data.ExecuteDMLStmt(srcTx, deleteStmt, values)
 			}
-			if err != nil {
-				errorChan <- err
-				success = false
+			if e != nil {
+				errs = append(errs, e.Error())
 			}
 		}()
 
 		waitGrp.Wait()
 
-		if !success {
-			break
+		if len(errs) != 0 {
+			err = fmt.Errorf(strings.Join(errs, "\n"))
+			return
 		}
 
 		if inserts < deletes {
-			errorChan <- errors.New("rows deleted larger than inserted, rollback and exit")
-			break
+			err = fmt.Errorf("rows deleted(%d) larger than inserted(%d), rollback and exit", deletes, inserts)
+			return
 		}
 
-		if e3 = tgtTx.Commit(); e3 != nil {
-			errorChan <- e3
-			break
+		if err = tgtTx.Commit(); err != nil {
+			return
 		}
-		if e3 = srcTx.Commit(); e3 != nil {
-			errorChan <- e3
-			break
+		if err = srcTx.Commit(); err != nil {
+			return
 		}
 
-		rowsAffected += int64(rowsFetched)
+		rowsSelect += rowQuantity
+		rowsInsert += inserts
+		rowsDelete += deletes
 
 		if lastLoop {
 			break
@@ -213,6 +197,17 @@ func Run(cfg *config.Config) (err error) {
 		}
 		time.Sleep(cfg.Sleep)
 	}
+
+	eTime := time.Now().Local()
+
+	if !cfg.Statistics {
+		return
+	}
+	fmt.Println()
+	fmt.Printf("TIME    start: %s, end: %s, duration: %s\n", sTime.Format(config.TimeFormat), eTime.Format(config.TimeFormat), eTime.Sub(sTime).String())
+	fmt.Printf("SOURCE  host: %s, port: %d, database: %s, table: %s, charset: %s\n", cfg.Source.Host, cfg.Source.Port, cfg.Source.Database, cfg.Source.Table, cfg.Source.Charset)
+	fmt.Printf("TARGET  host: %s, port: %d, database: %s, table: %s, charset: %s\n", cfg.Target.Host, cfg.Target.Port, cfg.Target.Database, cfg.Target.Table, cfg.Target.Charset)
+	fmt.Printf("ACTION  select: %d, insert: %d, delete: %d\n", rowsSelect, rowsInsert, rowsDelete)
 
 	return
 }
@@ -245,8 +240,8 @@ func buildColumnsAndPlaceholderSet(columnNames []string) (columns string, placeh
 // buildPlaceholders
 //  placeholderSets: (?, ?, ?, ...), (?, ?, ?, ...), ...
 //  ukPlaceholderSets: (?, ...), (?, ...), ...
-func buildPlaceholders(placeholderSet string, ukPlaceholderSet string, rowQuantity uint) (placeholderSets *string, ukPlaceholderSets *string) {
-	f := func(i uint, s1 string, s2 string, b1 *bytes.Buffer, b2 *bytes.Buffer) {
+func buildPlaceholders(placeholderSet string, ukPlaceholderSet string, rowQuantity int64) (placeholderSets *string, ukPlaceholderSets *string) {
+	f := func(i int64, s1 string, s2 string, b1 *bytes.Buffer, b2 *bytes.Buffer) {
 		if i > 0 {
 			b1.WriteString(", ")
 			b2.WriteString(", ")
@@ -256,7 +251,7 @@ func buildPlaceholders(placeholderSet string, ukPlaceholderSet string, rowQuanti
 		return
 	}
 	if ukPlaceholderSet == "" {
-		f = func(i uint, s string, _ string, b *bytes.Buffer, _ *bytes.Buffer) {
+		f = func(i int64, s string, _ string, b *bytes.Buffer, _ *bytes.Buffer) {
 			if i > 0 {
 				b.WriteString(", ")
 			}
@@ -265,7 +260,7 @@ func buildPlaceholders(placeholderSet string, ukPlaceholderSet string, rowQuanti
 		}
 	}
 	buf1, buf2 := new(bytes.Buffer), new(bytes.Buffer)
-	for i := uint(0); i < rowQuantity; i++ {
+	for i := int64(0); i < rowQuantity; i++ {
 		f(i, placeholderSet, ukPlaceholderSet, buf1, buf2)
 	}
 	str1, str2 := buf1.String(), buf2.String()
