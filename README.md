@@ -1,1 +1,1 @@
-# go-mysql-archiver
+# go-archiver
