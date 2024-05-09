@@ -33,11 +33,13 @@ func Run(cfg *config.Config) (err error) {
 		err = e3
 		return
 	}
-	if len(columnNames) == 0 {
+	columnQuantity := len(columnNames)
+	if columnQuantity == 0 {
 		err = fmt.Errorf("source table `%s` not found", cfg.Source.Table)
 		return
 	}
 	columns, placeholderSet := buildColumnsAndPlaceholderSet(columnNames)
+	valueMaxCapacity := columnQuantity * int(cfg.Source.Limit)
 
 	selectStmt := buildSelectStmt(cfg.Source.Table, columns, cfg.Source.Where, cfg.Source.Limit)
 
@@ -61,6 +63,7 @@ func Run(cfg *config.Config) (err error) {
 		}
 	}
 	ukColumns, ukPlaceholderSet := buildColumnsAndPlaceholderSet(ukColumn.Names)
+	ukValueMaxCapacity := len(ukColumn.Names) * int(cfg.Source.Limit)
 
 	tgtTableCount, e6 := data.CheckTargetTable(tgtConn, cfg.Target.Database, cfg.Target.Table)
 	if e6 != nil {
@@ -101,7 +104,9 @@ func Run(cfg *config.Config) (err error) {
 		lastLoop   = false
 	)
 	for {
-		values, ukValues, rowQuantity, e1 := data.GetValues(srcConn, selectStmt, ukColumn.Positions)
+		valueContainer := make([]interface{}, 0, valueMaxCapacity)
+		ukValueContainer := make([]interface{}, 0, ukValueMaxCapacity)
+		rowQuantity, e1 := data.GetValues(srcConn, selectStmt, columnQuantity, ukColumn.Positions, &valueContainer, &ukValueContainer)
 		if e1 != nil {
 			err = e1
 			return
@@ -124,12 +129,12 @@ func Run(cfg *config.Config) (err error) {
 		}
 		firstLoop = false
 
-		srcTx, e2 := srcConn.Beginx()
+		srcTx, e2 := srcConn.Begin()
 		if e2 != nil {
 			err = e2
 			return
 		}
-		tgtTx, e3 := tgtConn.Beginx()
+		tgtTx, e3 := tgtConn.Begin()
 		if e3 != nil {
 			err = e3
 			return
@@ -146,7 +151,7 @@ func Run(cfg *config.Config) (err error) {
 		go func() {
 			defer waitGrp.Done()
 			var e error
-			if inserts, e = data.ExecuteDMLStmt(tgtTx, insertStmt, values); e != nil {
+			if inserts, e = data.ExecuteDMLStmt(tgtTx, insertStmt, &valueContainer); e != nil {
 				errs = append(errs, e.Error())
 			}
 		}()
@@ -156,9 +161,9 @@ func Run(cfg *config.Config) (err error) {
 			defer waitGrp.Done()
 			var e error
 			if ukExists {
-				deletes, e = data.ExecuteDMLStmt(srcTx, deleteStmt, ukValues)
+				deletes, e = data.ExecuteDMLStmt(srcTx, deleteStmt, &ukValueContainer)
 			} else {
-				deletes, e = data.ExecuteDMLStmt(srcTx, deleteStmt, values)
+				deletes, e = data.ExecuteDMLStmt(srcTx, deleteStmt, &valueContainer)
 			}
 			if e != nil {
 				errs = append(errs, e.Error())
@@ -204,7 +209,7 @@ func Run(cfg *config.Config) (err error) {
 		return
 	}
 	fmt.Println()
-	fmt.Printf("TIME    start: %s, end: %s, duration: %s\n", sTime.Format(config.TimeFormat), eTime.Format(config.TimeFormat), eTime.Sub(sTime).String())
+	fmt.Printf("TIME    start: %s, end: %s, duration: %s\n", sTime.Format(config.TimeFormat), eTime.Format(config.TimeFormat), eTime.Sub(sTime).Truncate(time.Second).String())
 	fmt.Printf("SOURCE  host: %s, port: %d, database: %s, table: %s, charset: %s\n", cfg.Source.Host, cfg.Source.Port, cfg.Source.Database, cfg.Source.Table, cfg.Source.Charset)
 	fmt.Printf("TARGET  host: %s, port: %d, database: %s, table: %s, charset: %s\n", cfg.Target.Host, cfg.Target.Port, cfg.Target.Database, cfg.Target.Table, cfg.Target.Charset)
 	fmt.Printf("ACTION  select: %d, insert: %d, delete: %d\n", rowsSelect, rowsInsert, rowsDelete)

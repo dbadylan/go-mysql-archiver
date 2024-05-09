@@ -43,21 +43,21 @@ func NewFlag() (cfg *Config, err error) {
 	srcUsername := flag.String("src.username", "root", "source mysql username")
 	srcPassword := flag.String("src.password", "", "source mysql password")
 	srcDatabase := flag.String("src.database", "", "source mysql database")
-	srcCharset := flag.String("src.charset", "utf8mb4,utf8", "source mysql charset")
+	srcCharset := flag.String("src.charset", "utf8mb4", "source mysql character set")
 	srcTable := flag.String("src.table", "", "source mysql table")
-	srcWhere := flag.String("src.where", "1 = 1", "WHERE clause")
-	srcLimit := flag.Uint("src.limit", 500, "rows to fetch per round")
+	srcWhere := flag.String("src.where", "1 = 1", "the WHERE clause")
+	srcLimit := flag.Uint("src.limit", 500, "the number of rows fetched per round")
 
 	tgtHost := flag.String("tgt.host", "127.0.0.1", "target mysql host")
 	tgtPort := flag.Uint("tgt.port", 3306, "target mysql port")
 	tgtUsername := flag.String("tgt.username", "root", "target mysql username")
 	tgtPassword := flag.String("tgt.password", "", "target mysql password")
 	tgtDatabase := flag.String("tgt.database", "", "target mysql database, if unspecified, it defaults to the source database")
-	tgtCharset := flag.String("tgt.charset", "", "target mysql charset, if unspecified, it defaults to the source charset")
+	tgtCharset := flag.String("tgt.charset", "", "target mysql character set, if unspecified, it defaults to the source character set")
 	tgtTable := flag.String("tgt.table", "", "target mysql table, if unspecified, it defaults to the source table")
 
 	progress := flag.Duration("progress", 5*time.Second, "time interval for printing progress, such as 10s, 1m, etc, 0 means disable")
-	sleep := flag.Duration("sleep", 100*time.Millisecond, "time interval for fetching rows, such as 0, 500ms, 1s, etc, 0 means disable")
+	sleep := flag.Duration("sleep", 0, "time interval for fetching rows, such as 500ms, 1s, etc, if unspecified, it means disable")
 	statistics := flag.Bool("statistics", false, "print statistics after task has finished")
 
 	flag.Parse()
@@ -95,8 +95,8 @@ func NewFlag() (cfg *Config, err error) {
 		err = errors.New("progress must be larger than 1s")
 		return
 	}
-	if *sleep != 0 && *sleep < time.Millisecond {
-		err = errors.New("sleep must be 0 or larger than 100ms")
+	if *sleep > 0 && *sleep < time.Millisecond {
+		err = errors.New("sleep must be larger than 100ms")
 		return
 	}
 	if *srcLimit == 0 {
