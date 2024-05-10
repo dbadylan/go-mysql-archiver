@@ -3,6 +3,7 @@ package archiver
 import (
 	"bytes"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -41,29 +42,55 @@ func Run(cfg *config.Config) (err error) {
 	columns, placeholderSet := buildColumnsAndPlaceholderSet(columnNames)
 	valueMaxCapacity := columnQuantity * int(cfg.Source.Limit)
 
-	selectStmt := buildSelectStmt(cfg.Source.Table, columns, cfg.Source.Where, cfg.Source.Limit)
-
-	rowsEstimated, e4 := data.CheckSelectStmt(srcConn, cfg.Source.Table, selectStmt)
+	simpleStmt := buildSimpleSelectStmt(cfg.Source.Table, cfg.Source.Where)
+	explainKeyName, rowsEstimated, e4 := data.CheckSyntax(srcConn, cfg.Source.Table, simpleStmt)
 	if e4 != nil {
 		err = e4
 		return
 	}
 
-	uniqueKeys, e5 := data.GetUniqueKeyColumns(srcConn, cfg.Source.MySQL.Database, cfg.Source.Table)
+	keys, e5 := data.GetKeys(srcConn, cfg.Source.Database, cfg.Source.Table)
 	if e5 != nil {
 		err = e5
 		return
 	}
-	ukName := "PRIMARY"
-	ukColumn, ukExists := uniqueKeys[ukName]
-	if !ukExists {
-		for ukName, ukColumn = range uniqueKeys {
-			ukExists = true
-			break
-		}
+	pickedKeyType, pickedKeyName := getKey(keys)
+
+	var keyName string
+	if explainKeyName != "" {
+		keyName = explainKeyName
+	} else {
+		keyName = pickedKeyName
 	}
-	ukColumns, ukPlaceholderSet := buildColumnsAndPlaceholderSet(ukColumn.Names)
-	ukValueMaxCapacity := len(ukColumn.Names) * int(cfg.Source.Limit)
+
+	var (
+		keyColumns          string
+		keyPlaceholderSet   string
+		keyColumnPositions  []int
+		keyValueMaxCapacity int
+		selectStmt          string
+	)
+	if keyName != "" {
+		keyCols, keyColPoss, e := data.GetKeyColumns(srcConn, cfg.Source.Database, cfg.Source.Table, keyName)
+		if e != nil {
+			err = e
+			return
+		}
+		keyColumnNames := strings.Split(keyCols, ",")
+		keyColumns, keyPlaceholderSet = buildColumnsAndPlaceholderSet(keyColumnNames)
+		for _, keyColPos := range strings.Split(keyColPoss, ",") {
+			pos, e := strconv.ParseInt(keyColPos, 10, 32)
+			if e != nil {
+				err = e
+				return
+			}
+			keyColumnPositions = append(keyColumnPositions, int(pos))
+		}
+		keyValueMaxCapacity = len(keyColumnNames) * int(cfg.Source.Limit)
+		selectStmt = buildOrderSelectStmt(cfg.Source.Table, columns, cfg.Source.Where, keyColumns, cfg.Source.Limit)
+	} else {
+		selectStmt = buildSelectStmt(cfg.Source.Table, columns, cfg.Source.Where, cfg.Source.Limit)
+	}
 
 	tgtTableCount, e6 := data.CheckTargetTable(tgtConn, cfg.Target.Database, cfg.Target.Table)
 	if e6 != nil {
@@ -105,8 +132,8 @@ func Run(cfg *config.Config) (err error) {
 	)
 	for {
 		valueContainer := make([]interface{}, 0, valueMaxCapacity)
-		ukValueContainer := make([]interface{}, 0, ukValueMaxCapacity)
-		rowQuantity, e1 := data.GetValues(srcConn, selectStmt, columnQuantity, ukColumn.Positions, &valueContainer, &ukValueContainer)
+		keyValueContainer := make([]interface{}, 0, keyValueMaxCapacity)
+		rowQuantity, e1 := data.GetValues(srcConn, selectStmt, keyColumnPositions, &valueContainer, &keyValueContainer)
 		if e1 != nil {
 			err = e1
 			return
@@ -119,12 +146,15 @@ func Run(cfg *config.Config) (err error) {
 		}
 
 		if firstLoop || lastLoop {
-			placeholderSets, ukPlaceholderSets := buildPlaceholders(placeholderSet, ukPlaceholderSet, rowQuantity)
+			placeholderSets, keyPlaceholderSets := buildPlaceholders(placeholderSet, keyPlaceholderSet, rowQuantity)
 			insertStmt = buildInsertStmt(cfg.Target.Table, columns, placeholderSets)
-			if ukExists {
-				deleteStmt = buildUniqueIndexDeleteStmt(cfg.Source.Table, ukColumns, ukPlaceholderSets)
-			} else {
-				deleteStmt = buildEntireMatchDeleteStmt(cfg.Source.Table, columns, placeholderSets, cfg.Source.Limit)
+			switch pickedKeyType {
+			case 0:
+				deleteStmt = buildDeleteByRowStmt(cfg.Source.Table, columns, placeholderSets, cfg.Source.Limit)
+			case 1:
+				deleteStmt = buildDeleteByUniqueKeyStmt(cfg.Source.Table, keyColumns, keyPlaceholderSets)
+			case 2:
+				deleteStmt = buildDeleteByKeyStmt(cfg.Source.Table, keyColumns, keyPlaceholderSets, cfg.Source.Limit)
 			}
 		}
 		firstLoop = false
@@ -160,10 +190,11 @@ func Run(cfg *config.Config) (err error) {
 		go func() {
 			defer waitGrp.Done()
 			var e error
-			if ukExists {
-				deletes, e = data.ExecuteDMLStmt(srcTx, deleteStmt, &ukValueContainer)
-			} else {
+			switch pickedKeyType {
+			case 0:
 				deletes, e = data.ExecuteDMLStmt(srcTx, deleteStmt, &valueContainer)
+			case 1, 2:
+				deletes, e = data.ExecuteDMLStmt(srcTx, deleteStmt, &keyValueContainer)
 			}
 			if e != nil {
 				errs = append(errs, e.Error())
@@ -244,8 +275,8 @@ func buildColumnsAndPlaceholderSet(columnNames []string) (columns string, placeh
 
 // buildPlaceholders
 //  placeholderSets: (?, ?, ?, ...), (?, ?, ?, ...), ...
-//  ukPlaceholderSets: (?, ...), (?, ...), ...
-func buildPlaceholders(placeholderSet string, ukPlaceholderSet string, rowQuantity int64) (placeholderSets *string, ukPlaceholderSets *string) {
+//  keyPlaceholderSets: (?, ...), (?, ...), ...
+func buildPlaceholders(placeholderSet string, keyPlaceholderSet string, rowQuantity int64) (placeholderSets *string, keyPlaceholderSets *string) {
 	f := func(i int64, s1 string, s2 string, b1 *bytes.Buffer, b2 *bytes.Buffer) {
 		if i > 0 {
 			b1.WriteString(", ")
@@ -255,7 +286,7 @@ func buildPlaceholders(placeholderSet string, ukPlaceholderSet string, rowQuanti
 		b2.WriteString(s2)
 		return
 	}
-	if ukPlaceholderSet == "" {
+	if keyPlaceholderSet == "" {
 		f = func(i int64, s string, _ string, b *bytes.Buffer, _ *bytes.Buffer) {
 			if i > 0 {
 				b.WriteString(", ")
@@ -266,41 +297,94 @@ func buildPlaceholders(placeholderSet string, ukPlaceholderSet string, rowQuanti
 	}
 	buf1, buf2 := new(bytes.Buffer), new(bytes.Buffer)
 	for i := int64(0); i < rowQuantity; i++ {
-		f(i, placeholderSet, ukPlaceholderSet, buf1, buf2)
+		f(i, placeholderSet, keyPlaceholderSet, buf1, buf2)
 	}
 	str1, str2 := buf1.String(), buf2.String()
 	placeholderSets = &str1
-	ukPlaceholderSets = &str2
+	keyPlaceholderSets = &str2
+	return
+}
+
+// getKey
+//  0: no key
+//  1: unique key
+//  2: key
+func getKey(keys []data.Key) (keyType int, keyName string) {
+	var (
+		uniqueKeys []string
+		otherKeys  []string
+	)
+	for _, key := range keys {
+		if key.NonUnique == 0 && key.Nullable == "" {
+			uniqueKeys = append(uniqueKeys, key.Name)
+			continue
+		}
+		otherKeys = append(otherKeys, key.Name)
+	}
+
+	if len(uniqueKeys) > 0 {
+		keyType = 1
+		keyName = uniqueKeys[0]
+		return
+	}
+	if len(otherKeys) > 0 {
+		keyType = 2
+		keyName = otherKeys[0]
+		return
+	}
+
+	return
+}
+
+// buildSimpleSelectStmt
+//  SELECT /* go-archiver */ COUNT(*) FROM `tb` WHERE c4 < 'xxx'
+func buildSimpleSelectStmt(table string, where string) (stmt string) {
+	stmt = fmt.Sprintf("SELECT /* go-archiver */ COUNT(*) FROM `%s` WHERE %s", table, where)
 	return
 }
 
 // buildSelectStmt
-//  SELECT /* go-mysql-archiver */ `c1`, `c2`, `c3`, ... FROM `tb` WHERE c4 < 'xxx' LIMIT 1000
+//  SELECT /* go-archiver */ `c1`, `c2`, `c3`, ... FROM `tb` WHERE c4 < 'xxx' LIMIT 1000
 func buildSelectStmt(table string, columns string, where string, limit uint) (stmt string) {
-	stmt = fmt.Sprintf("SELECT /* go-mysql-archiver */ %s FROM `%s` WHERE %s LIMIT %d", columns, table, where, limit)
+	stmt = fmt.Sprintf("SELECT /* go-archiver */ %s FROM `%s` WHERE %s LIMIT %d", columns, table, where, limit)
+	return
+}
+
+// buildOrderSelectStmt
+//  SELECT /* go-archiver */ `c1`, `c2`, `c3`, ... FROM `tb` WHERE c4 < 'xxx' ORDER BY `c4` LIMIT 1000
+func buildOrderSelectStmt(table string, columns string, where string, keyColumns string, limit uint) (stmt string) {
+	stmt = fmt.Sprintf("SELECT /* go-archiver */ %s FROM `%s` WHERE %s ORDER BY %s LIMIT %d", columns, table, where, keyColumns, limit)
 	return
 }
 
 // buildInsertStmt
-//  INSERT /* go-mysql-archiver */ INTO `tb` (`c1`, `c2`, `c3`, ...) VALUES (?, ?, ?, ...), (?, ?, ?, ...), ...
+//  INSERT /* go-archiver */ INTO `tb` (`c1`, `c2`, `c3`, ...) VALUES (?, ?, ?, ...), (?, ?, ?, ...), ...
 func buildInsertStmt(table string, columns string, placeholderSets *string) (stmt *string) {
-	s := fmt.Sprintf("INSERT /* go-mysql-archiver */ INTO `%s` (%s) VALUES %s", table, columns, *placeholderSets)
+	s := fmt.Sprintf("INSERT /* go-archiver */ INTO `%s` (%s) VALUES %s", table, columns, *placeholderSets)
 	stmt = &s
 	return
 }
 
-// buildUniqueIndexDeleteStmt
-//  DELETE /* go-mysql-archiver */ FROM `tb` WHERE (`c1`, `c2`, ...) IN ((?, ?, ...), (?, ?, ...), ...)
-func buildUniqueIndexDeleteStmt(table string, ukColumns string, ukPlaceholderSets *string) (stmt *string) {
-	s := fmt.Sprintf("DELETE /* go-mysql-archiver */ FROM `%s` WHERE (%s) IN (%s)", table, ukColumns, *ukPlaceholderSets)
+// buildDeleteByUniqueKeyStmt
+//  DELETE /* go-archiver */ FROM `tb` WHERE (`c1`, `c2`, ...) IN ((?, ?, ...), (?, ?, ...), ...)
+func buildDeleteByUniqueKeyStmt(table string, keyColumns string, keyPlaceholderSets *string) (stmt *string) {
+	s := fmt.Sprintf("DELETE /* go-archiver */ FROM `%s` WHERE (%s) IN (%s)", table, keyColumns, *keyPlaceholderSets)
 	stmt = &s
 	return
 }
 
-// buildEntireMatchDeleteStmt
-//  DELETE /* go-mysql-archiver */ FROM `tb` WHERE (`c1`, `c2`, `c3`, ...) IN ((?, ?, ?, ...), (?, ?, ?, ...), ...) LIMIT 1000
-func buildEntireMatchDeleteStmt(table string, columns string, placeholderSets *string, limit uint) (stmt *string) {
-	s := fmt.Sprintf("DELETE /* go-mysql-archiver */ FROM `%s` WHERE (%s) IN (%s) LIMIT %d", table, columns, *placeholderSets, limit)
+// buildDeleteByKeyStmt
+//  DELETE /* go-archiver */ FROM `tb` WHERE (`c1`, `c2`, ...) IN ((?, ?, ...), (?, ?, ...), ...) ORDER BY `c1`, `c2`, ... LIMIT 1000
+func buildDeleteByKeyStmt(table string, keyColumns string, keyPlaceholderSets *string, limit uint) (stmt *string) {
+	s := fmt.Sprintf("DELETE /* go-archiver */ FROM `%s` WHERE (%s) IN (%s) ORDER BY %s LIMIT %d", table, keyColumns, *keyPlaceholderSets, keyColumns, limit)
+	stmt = &s
+	return
+}
+
+// buildDeleteByRowStmt
+//  DELETE /* go-archiver */ FROM `tb` WHERE (`c1`, `c2`, `c3`, ...) IN ((?, ?, ?, ...), (?, ?, ?, ...), ...) LIMIT 1000
+func buildDeleteByRowStmt(table string, columns string, placeholderSets *string, limit uint) (stmt *string) {
+	s := fmt.Sprintf("DELETE /* go-archiver */ FROM `%s` WHERE (%s) IN (%s) LIMIT %d", table, columns, *placeholderSets, limit)
 	stmt = &s
 	return
 }

@@ -2,7 +2,6 @@ package data
 
 import (
 	"database/sql"
-	"encoding/json"
 	"fmt"
 
 	"github.com/dbadylan/go-archiver/internal/config"
@@ -21,11 +20,10 @@ func NewConn(m config.MySQL) (db *sql.DB, err error) {
 }
 
 func GetColumnNames(db *sql.DB, database string, table string) (columnNames []string, err error) {
-	query := `SELECT /* go-mysql-archiver */ COLUMN_NAME
-                FROM information_schema.COLUMNS
-                WHERE TABLE_SCHEMA = ?
-                AND TABLE_NAME = ?
-                AND EXTRA NOT IN ('VIRTUAL GENERATED', 'STORED GENERATED')`
+	query := `SELECT /* go-archiver */ COLUMN_NAME
+FROM information_schema.COLUMNS
+WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND EXTRA NOT IN ('VIRTUAL GENERATED', 'STORED GENERATED')
+ORDER BY ORDINAL_POSITION`
 	var rows *sql.Rows
 	if rows, err = db.Query(query, database, table); err != nil {
 		return
@@ -43,30 +41,18 @@ func GetColumnNames(db *sql.DB, database string, table string) (columnNames []st
 	return
 }
 
-type IndexColumn struct {
-	Names     []string
-	Positions []int
+type Key struct {
+	Name      string
+	NonUnique uint8
+	Nullable  string
 }
 
-func GetUniqueKeyColumns(db *sql.DB, database string, table string) (uniqueKeys map[string]IndexColumn, err error) {
-	query := `SELECT /* go-mysql-archiver */ index_name, column_names, column_positions
-FROM (
-    SELECT s.INDEX_NAME index_name,
-           GROUP_CONCAT(DISTINCT c.IS_NULLABLE) is_nullable,
-           CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', c.COLUMN_NAME, '"') ORDER BY c.ORDINAL_POSITION SEPARATOR ', '), ']'), JSON) column_names,
-           CONVERT(CONCAT('[', GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY c.ORDINAL_POSITION SEPARATOR ', '), ']'), JSON) column_positions
-    FROM information_schema.STATISTICS s
-    JOIN information_schema.COLUMNS c
-    ON s.TABLE_SCHEMA = c.TABLE_SCHEMA
-    AND s.TABLE_NAME = c.TABLE_NAME
-    AND s.COLUMN_NAME = c.COLUMN_NAME
-    WHERE s.NON_UNIQUE = 0
-    AND s.IS_VISIBLE = 'YES'
-    AND s.TABLE_SCHEMA = ?
-    AND s.TABLE_NAME = ?
-    GROUP BY s.INDEX_NAME
-) t
-WHERE is_nullable = 'NO'`
+func GetKeys(db *sql.DB, database string, table string) (keys []Key, err error) {
+	query := `SELECT /* go-archiver */ INDEX_NAME, GROUP_CONCAT(DISTINCT NON_UNIQUE), GROUP_CONCAT(DISTINCT NULLABLE), MAX(CARDINALITY) c
+FROM information_schema.STATISTICS
+WHERE IS_VISIBLE = 'YES' AND TABLE_SCHEMA = ? AND TABLE_NAME = ?
+GROUP BY INDEX_NAME
+ORDER BY c DESC`
 
 	var rows *sql.Rows
 	if rows, err = db.Query(query, database, table); err != nil {
@@ -74,30 +60,32 @@ WHERE is_nullable = 'NO'`
 	}
 	defer func() { _ = rows.Close() }()
 
-	uniqueKeys = make(map[string]IndexColumn)
 	for rows.Next() {
 		var (
-			indexName          string
-			columnNamesRaw     []byte
-			columnPositionsRaw []byte
-			indexColumn        IndexColumn
+			key          Key
+			_cardinality uint64
 		)
-		if err = rows.Scan(&indexName, &columnNamesRaw, &columnPositionsRaw); err != nil {
+		if err = rows.Scan(&key.Name, &key.NonUnique, &key.Nullable, &_cardinality); err != nil {
 			return
 		}
-		if err = json.Unmarshal(columnNamesRaw, &indexColumn.Names); err != nil {
-			return
-		}
-		if err = json.Unmarshal(columnPositionsRaw, &indexColumn.Positions); err != nil {
-			return
-		}
-		uniqueKeys[indexName] = indexColumn
+		keys = append(keys, key)
 	}
 
 	return
 }
 
-func CheckSelectStmt(db *sql.DB, table string, query string) (rowsEstimate int64, err error) {
+func GetKeyColumns(db *sql.DB, database string, table string, key string) (columns string, positions string, err error) {
+	query := `SELECT /* go-archiver */ GROUP_CONCAT(c.COLUMN_NAME ORDER BY s.SEQ_IN_INDEX),
+       GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY s.SEQ_IN_INDEX)
+FROM information_schema.STATISTICS s
+JOIN information_schema.COLUMNS c
+ON s.TABLE_SCHEMA = c.TABLE_SCHEMA AND s.TABLE_NAME = c.TABLE_NAME AND s.COLUMN_NAME = c.COLUMN_NAME
+WHERE s.TABLE_SCHEMA = ? AND s.TABLE_NAME = ? AND s.INDEX_NAME = ?`
+	err = db.QueryRow(query, database, table, key).Scan(&columns, &positions)
+	return
+}
+
+func CheckSyntax(db *sql.DB, table string, query string) (keyName string, rowsEstimate int64, err error) {
 	var rows *sql.Rows
 	if rows, err = db.Query("EXPLAIN " + query); err != nil {
 		return
@@ -111,7 +99,7 @@ func CheckSelectStmt(db *sql.DB, table string, query string) (rowsEstimate int64
 		_partitions   sql.NullString
 		_type         sql.NullString
 		_possibleKeys sql.NullString
-		_key          sql.NullString
+		KeyName       sql.NullString
 		_keyLen       sql.NullInt32
 		_ref          sql.NullString
 		Rows          sql.NullInt64
@@ -126,7 +114,7 @@ func CheckSelectStmt(db *sql.DB, table string, query string) (rowsEstimate int64
 			&_partitions,
 			&_type,
 			&_possibleKeys,
-			&_key,
+			&KeyName,
 			&_keyLen,
 			&_ref,
 			&Rows,
@@ -139,6 +127,7 @@ func CheckSelectStmt(db *sql.DB, table string, query string) (rowsEstimate int64
 			continue
 		}
 		rowsEstimate = Rows.Int64
+		keyName = KeyName.String
 		break
 	}
 
@@ -146,17 +135,23 @@ func CheckSelectStmt(db *sql.DB, table string, query string) (rowsEstimate int64
 }
 
 func CheckTargetTable(db *sql.DB, database string, table string) (count int, err error) {
-	query := "SELECT /* go-mysql-archiver */ COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
+	query := "SELECT /* go-archiver */ COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
 	err = db.QueryRow(query, database, table).Scan(&count)
 	return
 }
 
-func GetValues(db *sql.DB, query string, columnQuantity int, ukColumnPositions []int, valueContainer *[]interface{}, ukValueContainer *[]interface{}) (rowQuantity int64, err error) {
+func GetValues(db *sql.DB, query string, keyColumnPositions []int, valueContainer *[]interface{}, keyValueContainer *[]interface{}) (rowQuantity int64, err error) {
 	var rows *sql.Rows
 	if rows, err = db.Query(query); err != nil {
 		return
 	}
 	defer func() { _ = rows.Close() }()
+
+	var columns []string
+	if columns, err = rows.Columns(); err != nil {
+		return
+	}
+	columnQuantity := len(columns)
 
 	for rows.Next() {
 		dest := make([]interface{}, columnQuantity)
@@ -167,8 +162,8 @@ func GetValues(db *sql.DB, query string, columnQuantity int, ukColumnPositions [
 			return
 		}
 		*valueContainer = append(*valueContainer, dest...)
-		for _, ukColumnPosition := range ukColumnPositions {
-			*ukValueContainer = append(*ukValueContainer, dest[ukColumnPosition])
+		for _, keyColumnPosition := range keyColumnPositions {
+			*keyValueContainer = append(*keyValueContainer, dest[keyColumnPosition])
 		}
 		rowQuantity++
 	}
