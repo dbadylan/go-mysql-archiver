@@ -1,4 +1,4 @@
-package archiver
+package biz
 
 import (
 	"fmt"
@@ -42,13 +42,16 @@ func Run(cfg *config.Config) (err error) {
 	if keyName == "" {
 		keyName = keys.Elected
 	}
-	keyColumnList := strings.Split(keys.Details[keyName].Columns, ",")
-	keyColumnDict := make(map[string]struct{})
-	for index, keyColumn := range keyColumnList {
-		keyColumnDict[keyColumn] = struct{}{}
-		keyColumnList[index] = fmt.Sprintf("`%s`", keyColumn)
+	var orderBy string
+	keyColumns := make(map[string]struct{})
+	if detail, exist := keys.Details[keyName]; exist {
+		var columnNames []string
+		for _, columnName := range detail.ColumnNames {
+			keyColumns[columnName] = struct{}{}
+			columnNames = append(columnNames, fmt.Sprintf("`%s`", columnName))
+		}
+		orderBy = strings.Join(columnNames, ", ")
 	}
-	orderBy := strings.Join(keyColumnList, ", ")
 
 	var rowsSelect int64
 	if cfg.Progress != 0 {
@@ -105,7 +108,7 @@ func Run(cfg *config.Config) (err error) {
 			Where:      cfg.Source.Where,
 			OrderBy:    orderBy,
 			Limit:      cfg.Source.Limit,
-			KeyColumns: keyColumnDict,
+			KeyColumns: keyColumns,
 		}
 
 		resp, e1 := data.SelectRows(selectParam)
@@ -154,10 +157,16 @@ func Run(cfg *config.Config) (err error) {
 		waitGrp.Add(1)
 		go func() {
 			defer waitGrp.Done()
+			var where *string
+			if orderBy == "" {
+				where = resp.Delete.Where
+			} else {
+				where = &cfg.Source.Where
+			}
 			param := &data.DeleteParam{
 				Tx:        srcTx,
 				Table:     cfg.Source.Table,
-				Where:     resp.Delete.Where,
+				Where:     where,
 				OrderBy:   orderBy,
 				Limit:     cfg.Source.Limit,
 				ValueList: resp.Delete.ValueList,
@@ -213,49 +222,3 @@ func Run(cfg *config.Config) (err error) {
 
 	return
 }
-
-// // buildExplainStmt
-// //  EXPLAIN /* go-archiver */ SELECT * FROM `tb` WHERE c1 < 'xxx' and c2 > 'xxx'
-// func buildExplainStmt(table string, where string) (stmt string) {
-// 	stmt = fmt.Sprintf("EXPLAIN /* go-archiver */ SELECT * FROM `%s`", table)
-// 	if where != "" {
-// 		stmt += " WHERE " + where
-// 	}
-// 	return
-// }
-
-// // buildSelectStmt
-// //  with key: SELECT /* go-archiver */ * FROM `tb` WHERE c1 < 'xxx' and c2 > 'xxx' ORDER BY `c1`, `c2` LIMIT 1000
-// //  without key: SELECT /* go-archiver */ * FROM `tb` WHERE c1 < 'xxx' and c2 > 'xxx' LIMIT 1000
-// func buildSelectStmt(table string, where string, orderBy string, limit int) (stmt string) {
-// 	stmt = fmt.Sprintf("SELECT * FROM `%s`", table)
-// 	if where != "" {
-// 		stmt += " WHERE " + where
-// 	}
-// 	if orderBy != "" {
-// 		stmt += " ORDER BY " + orderBy
-// 	}
-// 	stmt += fmt.Sprintf(" LIMIT %d", limit)
-// 	return
-// }
-
-// // buildInsertStmt
-// //  INSERT /* go-archiver */ INTO `tb` (`c1`, `c2`, `c3`, ...) VALUES (?, ?, ?, ...), (?, ?, ?, ...), ...
-// func buildInsertStmt(table string, columns string, valueClause *string) (stmt *string) {
-// 	s := fmt.Sprintf("INSERT /* go-archiver */ INTO `%s` (%s) VALUES %s", table, columns, *valueClause)
-// 	stmt = &s
-// 	return
-// }
-
-// // buildDeleteStmt
-// //  DELETE /* go-archiver */ FROM `tb` WHERE (`c1` = ? AND `c2` = ? AND ...) OR (`c1` = ? AND `c2` = ? AND ...) OR ... ORDER BY `c1`, `c2`, ... LIMIT 1000
-// //  DELETE /* go-archiver */ FROM `tb` WHERE (`c1` = ? AND `c2` = ? AND ...) OR (`c1` = ? AND `c2` = ? AND ...) OR ... LIMIT 1000
-// func buildDeleteStmt(table string, where *string, orderBy string, limit int) (stmt *string) {
-// 	s := fmt.Sprintf("DELETE /* go-archiver */ FROM `%s` WHERE %s", table, *where)
-// 	if orderBy != "" {
-// 		s += " ORDER BY " + orderBy
-// 	}
-// 	s += fmt.Sprintf(" LIMIT %d", limit)
-// 	stmt = &s
-// 	return
-// }

@@ -1,10 +1,16 @@
 # go-archiver
 
-用于解决 `pt-archiver` 使用中遇到的问题：
+## 背景
 
-* 字符集的兼容性较差
-* 批量操作依赖于 `LOAD DATA`
-* 不支持无索引的表
+该项目是 [`pt-archiver`](https://docs.percona.com/percona-toolkit/pt-archiver.html) 的 go 语言实现版本，优点有：
+
+* 不使用 `LOAD DATA`，云产品或无法开启 `local_infile` 的实例均可使用
+* 支持 MySQL 协议的目标端，理论上都能进行写入
+* 性能较高，详见下方数据比对
+* 支持无索引的表
+* 不同字符集的兼容性较好
+
+目前完成了核心功能，更多额外特性在逐步迭代中。
 
 ## 编译
 

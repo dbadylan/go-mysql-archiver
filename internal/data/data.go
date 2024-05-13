@@ -3,6 +3,7 @@ package data
 import (
 	"bytes"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -80,13 +81,13 @@ type Keys struct {
 }
 
 type Property struct {
-	Columns   string
-	NonUnique int
-	Nullable  string
+	ColumnNames []string
+	NonUnique   int
+	Nullable    string
 }
 
 func GetKeys(db *sql.DB, database string, table string) (keys Keys, err error) {
-	query := `SELECT /* go-archiver */ INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX), MAX(NON_UNIQUE) c, MAX(NULLABLE), MAX(CARDINALITY)
+	query := `SELECT /* go-archiver */ INDEX_NAME, CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', COLUMN_NAME, '"') ORDER BY SEQ_IN_INDEX), ']'), JSON), MAX(NON_UNIQUE) c, MAX(NULLABLE), MAX(CARDINALITY)
 FROM information_schema.STATISTICS
 WHERE INDEX_TYPE = 'BTREE' AND IS_VISIBLE = 'YES' AND TABLE_SCHEMA = ? AND TABLE_NAME = ?
 GROUP BY INDEX_NAME ORDER BY c DESC`
@@ -101,23 +102,22 @@ GROUP BY INDEX_NAME ORDER BY c DESC`
 	for rows.Next() {
 		var (
 			indexName   string
-			columns     string
-			nonUnique   int
-			nullable    string
+			columnNames []byte
 			cardinality int64
 		)
-		if err = rows.Scan(&indexName, &columns, &nonUnique, &nullable, &cardinality); err != nil {
+		var property Property
+		if err = rows.Scan(&indexName, &columnNames, &property.NonUnique, &property.Nullable, &cardinality); err != nil {
 			return
 		}
-		details[indexName] = Property{
-			Columns:   columns,
-			NonUnique: nonUnique,
-			Nullable:  nullable,
+		if err = json.Unmarshal(columnNames, &property.ColumnNames); err != nil {
+			return
 		}
-		if cardinality > c {
-			keys.Elected = indexName
-			c = cardinality
+		details[indexName] = property
+		if cardinality <= c {
+			continue
 		}
+		keys.Elected = indexName
+		c = cardinality
 	}
 	keys.Details = details
 
@@ -225,6 +225,10 @@ func SelectRows(param *SelectParam) (resp *SelectResponse, err error) {
 				valuesSubClauseBuf.WriteString(", ")
 			}
 
+			if param.OrderBy != "" {
+				continue
+			}
+
 			currentColumnName := columns[i]
 			if _, exist := param.KeyColumns[currentColumnName]; !exist {
 				continue
@@ -245,6 +249,10 @@ func SelectRows(param *SelectParam) (resp *SelectResponse, err error) {
 		}
 		valuesSubClauseBuf.WriteString(")")
 		valuesSubClauses = append(valuesSubClauses, valuesSubClauseBuf.String())
+
+		if param.OrderBy != "" {
+			continue
+		}
 		whereSubClauses = append(whereSubClauses, "("+strings.Join(columnExpressions, " AND ")+")")
 	}
 
@@ -287,14 +295,19 @@ type DeleteParam struct {
 }
 
 func DeleteRows(param *DeleteParam) (rowsAffected int64, err error) {
-	query := fmt.Sprintf("DELETE /* go-archiver */ FROM `%s` WHERE %s", param.Table, *param.Where)
-	if param.OrderBy != "" {
-		query += " ORDER BY " + param.OrderBy
+	query := fmt.Sprintf("DELETE /* go-archiver */ FROM `%s`", param.Table)
+	if *param.Where != "" {
+		query += fmt.Sprintf(" WHERE %s", *param.Where)
 	}
-	query += fmt.Sprintf(" LIMIT %d", param.Limit)
-
 	var result sql.Result
-	if result, err = param.Tx.Exec(query, *param.ValueList...); err != nil {
+	if param.OrderBy != "" {
+		query += fmt.Sprintf(" ORDER BY %s LIMIT %d", param.OrderBy, param.Limit)
+		result, err = param.Tx.Exec(query)
+	} else {
+		query += fmt.Sprintf(" LIMIT %d", param.Limit)
+		result, err = param.Tx.Exec(query, *param.ValueList...)
+	}
+	if err != nil {
 		return
 	}
 	rowsAffected, err = result.RowsAffected()
