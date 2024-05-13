@@ -21,7 +21,7 @@ type Source struct {
 	MySQL
 	Table string
 	Where string
-	Limit uint
+	Limit int64
 }
 
 type Target struct {
@@ -35,6 +35,7 @@ type Config struct {
 	Progress   time.Duration
 	Sleep      time.Duration
 	Statistics bool
+	Memory     int64
 }
 
 func NewFlag() (cfg *Config, err error) {
@@ -45,7 +46,7 @@ func NewFlag() (cfg *Config, err error) {
 	srcDatabase := flag.String("src.database", "", "source mysql database")
 	srcCharset := flag.String("src.charset", "utf8mb4", "source mysql character set")
 	srcTable := flag.String("src.table", "", "source mysql table")
-	srcWhere := flag.String("src.where", "1 = 1", "the WHERE clause")
+	srcWhere := flag.String("src.where", "", "the WHERE clause, if unspecified, it will fetch all rows")
 	srcLimit := flag.Uint("src.limit", 500, "the number of rows fetched per round")
 
 	tgtHost := flag.String("tgt.host", "127.0.0.1", "target mysql host")
@@ -59,10 +60,11 @@ func NewFlag() (cfg *Config, err error) {
 	progress := flag.Duration("progress", 5*time.Second, "time interval for printing progress, such as 10s, 1m, etc, 0 means disable")
 	sleep := flag.Duration("sleep", 0, "time interval for fetching rows, such as 500ms, 1s, etc, if unspecified, it means disable")
 	statistics := flag.Bool("statistics", false, "print statistics after task has finished")
+	memory := flag.Int64("memory", 0, "max memory usage in bytes, if unspecified, it means unlimited")
 
 	flag.Parse()
 
-	if *srcPort < 0 || *srcPort > 65535 || *tgtPort < 0 || *tgtPort > 65535 {
+	if *srcPort == 0 || *srcPort > 65535 || *tgtPort == 0 || *tgtPort > 65535 {
 		err = errors.New("port number out of range")
 		return
 	}
@@ -102,6 +104,10 @@ func NewFlag() (cfg *Config, err error) {
 	if *srcLimit == 0 {
 		*srcLimit = 500
 	}
+	if *memory < 0 {
+		err = errors.New("memory must be larger than 0")
+		return
+	}
 
 	cfg = &Config{
 		Source: Source{
@@ -115,7 +121,7 @@ func NewFlag() (cfg *Config, err error) {
 			},
 			Table: *srcTable,
 			Where: *srcWhere,
-			Limit: *srcLimit,
+			Limit: int64(*srcLimit),
 		},
 		Target: Target{
 			MySQL: MySQL{
@@ -131,6 +137,7 @@ func NewFlag() (cfg *Config, err error) {
 		Progress:   *progress,
 		Sleep:      *sleep,
 		Statistics: *statistics,
+		Memory:     *memory,
 	}
 
 	return

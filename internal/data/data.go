@@ -1,8 +1,10 @@
 package data
 
 import (
+	"bytes"
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"github.com/dbadylan/go-archiver/internal/config"
 
@@ -19,75 +21,13 @@ func NewConn(m config.MySQL) (db *sql.DB, err error) {
 	return
 }
 
-func GetColumnNames(db *sql.DB, database string, table string) (columnNames []string, err error) {
-	query := `SELECT /* go-archiver */ COLUMN_NAME
-FROM information_schema.COLUMNS
-WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ? AND EXTRA NOT IN ('VIRTUAL GENERATED', 'STORED GENERATED')
-ORDER BY ORDINAL_POSITION`
+func Explain(db *sql.DB, table string, where string) (keyName string, rowsEstimate int64, err error) {
+	query := fmt.Sprintf("EXPLAIN /* go-archiver */ SELECT * FROM `%s`", table)
+	if where != "" {
+		query += " WHERE " + where
+	}
 	var rows *sql.Rows
-	if rows, err = db.Query(query, database, table); err != nil {
-		return
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var columnName string
-		if err = rows.Scan(&columnName); err != nil {
-			return
-		}
-		columnNames = append(columnNames, columnName)
-	}
-
-	return
-}
-
-type Key struct {
-	Name      string
-	NonUnique uint8
-	Nullable  string
-}
-
-func GetKeys(db *sql.DB, database string, table string) (keys []Key, err error) {
-	query := `SELECT /* go-archiver */ INDEX_NAME, GROUP_CONCAT(DISTINCT NON_UNIQUE), GROUP_CONCAT(DISTINCT NULLABLE), MAX(CARDINALITY) c
-FROM information_schema.STATISTICS
-WHERE IS_VISIBLE = 'YES' AND TABLE_SCHEMA = ? AND TABLE_NAME = ?
-GROUP BY INDEX_NAME
-ORDER BY c DESC`
-
-	var rows *sql.Rows
-	if rows, err = db.Query(query, database, table); err != nil {
-		return
-	}
-	defer func() { _ = rows.Close() }()
-
-	for rows.Next() {
-		var (
-			key          Key
-			_cardinality uint64
-		)
-		if err = rows.Scan(&key.Name, &key.NonUnique, &key.Nullable, &_cardinality); err != nil {
-			return
-		}
-		keys = append(keys, key)
-	}
-
-	return
-}
-
-func GetKeyColumns(db *sql.DB, database string, table string, key string) (columns string, positions string, err error) {
-	query := `SELECT /* go-archiver */ GROUP_CONCAT(c.COLUMN_NAME ORDER BY s.SEQ_IN_INDEX),
-       GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY s.SEQ_IN_INDEX)
-FROM information_schema.STATISTICS s
-JOIN information_schema.COLUMNS c
-ON s.TABLE_SCHEMA = c.TABLE_SCHEMA AND s.TABLE_NAME = c.TABLE_NAME AND s.COLUMN_NAME = c.COLUMN_NAME
-WHERE s.TABLE_SCHEMA = ? AND s.TABLE_NAME = ? AND s.INDEX_NAME = ?`
-	err = db.QueryRow(query, database, table, key).Scan(&columns, &positions)
-	return
-}
-
-func CheckSyntax(db *sql.DB, table string, query string) (keyName string, rowsEstimate int64, err error) {
-	var rows *sql.Rows
-	if rows, err = db.Query("EXPLAIN " + query); err != nil {
+	if rows, err = db.Query(query); err != nil {
 		return
 	}
 	defer func() { _ = rows.Close() }()
@@ -134,46 +74,227 @@ func CheckSyntax(db *sql.DB, table string, query string) (keyName string, rowsEs
 	return
 }
 
-func CheckTargetTable(db *sql.DB, database string, table string) (count int, err error) {
-	query := "SELECT /* go-archiver */ COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA = ? AND TABLE_NAME = ?"
-	err = db.QueryRow(query, database, table).Scan(&count)
-	return
+type Keys struct {
+	Details map[string]Property
+	Elected string
 }
 
-func GetValues(db *sql.DB, query string, keyColumnPositions []int, valueContainer *[]interface{}, keyValueContainer *[]interface{}) (rowQuantity int64, err error) {
+type Property struct {
+	Columns   string
+	NonUnique int
+	Nullable  string
+}
+
+func GetKeys(db *sql.DB, database string, table string) (keys Keys, err error) {
+	query := `SELECT /* go-archiver */ INDEX_NAME, GROUP_CONCAT(COLUMN_NAME ORDER BY SEQ_IN_INDEX), MAX(NON_UNIQUE) c, MAX(NULLABLE), MAX(CARDINALITY)
+FROM information_schema.STATISTICS
+WHERE INDEX_TYPE = 'BTREE' AND IS_VISIBLE = 'YES' AND TABLE_SCHEMA = ? AND TABLE_NAME = ?
+GROUP BY INDEX_NAME ORDER BY c DESC`
 	var rows *sql.Rows
-	if rows, err = db.Query(query); err != nil {
+	if rows, err = db.Query(query, database, table); err != nil {
 		return
 	}
 	defer func() { _ = rows.Close() }()
+
+	details := make(map[string]Property)
+	var c int64
+	for rows.Next() {
+		var (
+			indexName   string
+			columns     string
+			nonUnique   int
+			nullable    string
+			cardinality int64
+		)
+		if err = rows.Scan(&indexName, &columns, &nonUnique, &nullable, &cardinality); err != nil {
+			return
+		}
+		details[indexName] = Property{
+			Columns:   columns,
+			NonUnique: nonUnique,
+			Nullable:  nullable,
+		}
+		if cardinality > c {
+			keys.Elected = indexName
+			c = cardinality
+		}
+	}
+	keys.Details = details
+
+	return
+}
+
+type SelectParam struct {
+	DB         *sql.DB
+	Table      string
+	Where      string
+	OrderBy    string
+	Limit      int64
+	KeyColumns map[string]struct{}
+}
+
+type Insert struct {
+	Columns   string
+	Values    *string
+	ValueList *[]interface{}
+}
+
+type Delete struct {
+	Where     *string
+	ValueList *[]interface{}
+}
+
+type SelectResponse struct {
+	Insert Insert
+	Delete Delete
+
+	Rows int64
+}
+
+func SelectRows(param *SelectParam) (resp *SelectResponse, err error) {
+	query := fmt.Sprintf("SELECT /* go-archiver */ * FROM `%s`", param.Table)
+	if param.Where != "" {
+		query += " WHERE " + param.Where
+	}
+	if param.OrderBy != "" {
+		query += " ORDER BY " + param.OrderBy
+	}
+	query += fmt.Sprintf(" LIMIT %d", param.Limit)
+
+	var rows *sql.Rows
+	if rows, err = param.DB.Query(query); err != nil {
+		return
+	}
+	defer func() { _ = rows.Close() }()
+
+	resp = new(SelectResponse)
 
 	var columns []string
 	if columns, err = rows.Columns(); err != nil {
 		return
 	}
-	columnQuantity := len(columns)
 
-	for rows.Next() {
-		dest := make([]interface{}, columnQuantity)
-		for i := range dest {
-			dest[i] = new(interface{})
+	allColQty := len(columns)
+	allColMaxIdx := allColQty - 1
+	dest := make([]interface{}, allColQty)
+	allColDict := make(map[string]struct{}, allColQty)
+	var columnBuf bytes.Buffer
+	for i := 0; i < allColQty; i++ {
+		dest[i] = new([]byte)
+		columnName := columns[i]
+		allColDict[columnName] = struct{}{}
+		columnBuf.WriteString("`")
+		columnBuf.WriteString(columnName)
+		columnBuf.WriteString("`")
+		if i != allColMaxIdx {
+			columnBuf.WriteString(", ")
 		}
+	}
+	resp.Insert.Columns = columnBuf.String()
+
+	keyColQty := len(param.KeyColumns)
+	if keyColQty == 0 {
+		keyColQty = allColQty
+		param.KeyColumns = allColDict
+	}
+
+	var (
+		valuesSubClauses []string
+		whereSubClauses  []string
+		allValueList     = make([]interface{}, 0, param.Limit*int64(allColQty))
+		keyValueList     = make([]interface{}, 0, param.Limit*int64(keyColQty))
+	)
+	for rows.Next() {
+		resp.Rows++
+
 		if err = rows.Scan(dest...); err != nil {
 			return
 		}
-		*valueContainer = append(*valueContainer, dest...)
-		for _, keyColumnPosition := range keyColumnPositions {
-			*keyValueContainer = append(*keyValueContainer, dest[keyColumnPosition])
+
+		var (
+			valuesSubClauseBuf bytes.Buffer
+			columnExpressions  []string
+		)
+		valuesSubClauseBuf.WriteString("(")
+		for i := 0; i < allColQty; i++ {
+			value := *(dest[i].(*[]byte))
+			allValueList = append(allValueList, value)
+
+			valuesSubClauseBuf.WriteString("?")
+			if i != allColMaxIdx {
+				valuesSubClauseBuf.WriteString(", ")
+			}
+
+			currentColumnName := columns[i]
+			if _, exist := param.KeyColumns[currentColumnName]; !exist {
+				continue
+			}
+			var operator string
+			if value == nil {
+				operator = "IS NULL"
+			} else {
+				operator = "= ?"
+				keyValueList = append(keyValueList, value)
+			}
+			var colExprBuf bytes.Buffer
+			colExprBuf.WriteString("`")
+			colExprBuf.WriteString(currentColumnName)
+			colExprBuf.WriteString("` ")
+			colExprBuf.WriteString(operator)
+			columnExpressions = append(columnExpressions, colExprBuf.String())
 		}
-		rowQuantity++
+		valuesSubClauseBuf.WriteString(")")
+		valuesSubClauses = append(valuesSubClauses, valuesSubClauseBuf.String())
+		whereSubClauses = append(whereSubClauses, "("+strings.Join(columnExpressions, " AND ")+")")
 	}
+
+	valuesClause := strings.Join(valuesSubClauses, ", ")
+	whereClause := strings.Join(whereSubClauses, " OR ")
+
+	resp.Insert.Values = &valuesClause
+	resp.Insert.ValueList = &allValueList
+	resp.Delete.Where = &whereClause
+	resp.Delete.ValueList = &keyValueList
 
 	return
 }
 
-func ExecuteDMLStmt(tx *sql.Tx, query *string, values *[]interface{}) (rowsAffected int64, err error) {
+type InsertParam struct {
+	Tx        *sql.Tx
+	Table     string
+	Columns   string
+	Values    *string
+	ValueList *[]interface{}
+}
+
+func InsertRows(param *InsertParam) (rowsAffected int64, err error) {
+	query := fmt.Sprintf("INSERT /* go-archiver */ INTO `%s` (%s) VALUES %s", param.Table, param.Columns, *param.Values)
 	var result sql.Result
-	if result, err = tx.Exec(*query, *values...); err != nil {
+	if result, err = param.Tx.Exec(query, *param.ValueList...); err != nil {
+		return
+	}
+	rowsAffected, err = result.RowsAffected()
+	return
+}
+
+type DeleteParam struct {
+	Tx        *sql.Tx
+	Table     string
+	Where     *string
+	OrderBy   string
+	Limit     int64
+	ValueList *[]interface{}
+}
+
+func DeleteRows(param *DeleteParam) (rowsAffected int64, err error) {
+	query := fmt.Sprintf("DELETE /* go-archiver */ FROM `%s` WHERE %s", param.Table, *param.Where)
+	if param.OrderBy != "" {
+		query += " ORDER BY " + param.OrderBy
+	}
+	query += fmt.Sprintf(" LIMIT %d", param.Limit)
+
+	var result sql.Result
+	if result, err = param.Tx.Exec(query, *param.ValueList...); err != nil {
 		return
 	}
 	rowsAffected, err = result.RowsAffected()
