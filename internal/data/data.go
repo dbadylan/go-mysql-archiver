@@ -12,8 +12,8 @@ import (
 	_ "github.com/go-sql-driver/mysql"
 )
 
-func NewConn(m config.MySQL) (db *sql.DB, err error) {
-	if db, err = sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s:%d)/%s?charset=%s&interpolateParams=true", m.Username, m.Password, m.Host, m.Port, m.Database, m.Charset)); err != nil {
+func NewDB(m config.MySQL) (db *sql.DB, err error) {
+	if db, err = sql.Open("mysql", fmt.Sprintf("%s:%s@tcp(%s)/%s?charset=%s&interpolateParams=true", m.Username, m.Password, m.Address, m.Database, m.Charset)); err != nil {
 		return
 	}
 	db.SetMaxIdleConns(2)
