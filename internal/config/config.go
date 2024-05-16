@@ -8,6 +8,36 @@ import (
 
 const TimeFormat = "2006-01-02 15:04:05"
 
+var StatisticsTemplate = `
+{
+    "time": {
+        "begin": "%s",
+        "finish": "%s",
+        "duration": "%s"
+    },
+    "instance": {
+        "source": {
+            "address": "%s",
+            "database": "%s",
+            "table": "%s",
+            "charset": "%s"
+        },
+        "target": {
+            "address": "%s",
+            "database": "%s",
+            "table": "%s",
+            "charset": "%s"
+        }
+    },
+    "action": {
+        "select": %d,
+        "insert": %d,
+        "delete": %d
+    }
+}
+
+`
+
 type MySQL struct {
 	Address  string
 	Username string
@@ -42,18 +72,18 @@ func NewFlag() (cfg *Config, err error) {
 	srcAddress := flag.String("src-address", "127.0.0.1:3306", "source mysql address")
 	srcUsername := flag.String("src-username", "root", "source mysql username")
 	srcPassword := flag.String("src-password", "", "source mysql password")
-	srcDatabase := flag.String("src-database", "", "source mysql database")
-	srcCharset := flag.String("src-charset", "utf8mb4", "source mysql character set")
-	srcTable := flag.String("src-table", "", "source mysql table")
+	srcDatabase := flag.String("src-database", "", "source database")
+	srcCharset := flag.String("src-charset", "utf8mb4", "source character set")
+	srcTable := flag.String("src-table", "", "source table")
 	srcWhere := flag.String("src-where", "", "the WHERE clause, if unspecified, it will fetch all rows")
 	srcLimit := flag.Uint("src-limit", 500, "the number of rows fetched per round")
 
-	tgtAddress := flag.String("tgt-address", "127.0.0.1:3306", "target mysql address")
-	tgtUsername := flag.String("tgt-username", "root", "target mysql username")
-	tgtPassword := flag.String("tgt-password", "", "target mysql password")
-	tgtDatabase := flag.String("tgt-database", "", "target mysql database, if unspecified, it defaults to the source database")
-	tgtCharset := flag.String("tgt-charset", "", "target mysql character set, if unspecified, it defaults to the source character set")
-	tgtTable := flag.String("tgt-table", "", "target mysql table, if unspecified, it defaults to the source table")
+	tgtAddress := flag.String("tgt-address", "127.0.0.1:3306", "target instance address")
+	tgtUsername := flag.String("tgt-username", "root", "target instance username")
+	tgtPassword := flag.String("tgt-password", "", "target instance password")
+	tgtDatabase := flag.String("tgt-database", "", "target database, if unspecified, it defaults to the source database")
+	tgtCharset := flag.String("tgt-charset", "", "target character set, if unspecified, it defaults to the source character set")
+	tgtTable := flag.String("tgt-table", "", "target table, if unspecified, it defaults to the source table")
 
 	progress := flag.Duration("progress", 5*time.Second, "time interval for printing progress, such as 10s, 1m, etc, 0 means disable")
 	sleep := flag.Duration("sleep", 0, "time interval for fetching rows, such as 500ms, 1s, etc, if unspecified, it means disable")

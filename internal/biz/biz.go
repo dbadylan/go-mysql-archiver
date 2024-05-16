@@ -125,8 +125,9 @@ L:
 				Limit:      cfg.Source.Limit,
 				KeyColumns: keyColumns,
 			}
-			var resp *data.SelectResponse
-			if resp, err = data.SelectRows(selectParam); err != nil {
+			resp, e1 := data.SelectRows(selectParam)
+			if e1 != nil {
+				err = e1
 				return
 			}
 			if resp.Rows == 0 {
@@ -134,105 +135,89 @@ L:
 			}
 			rowsSelect += resp.Rows
 
+			srcTx, e2 := srcDB.Begin()
+			if e2 != nil {
+				err = e2
+				return
+			}
+			tgtTx, e3 := tgtDB.Begin()
+			if e3 != nil {
+				err = e3
+				return
+			}
+
+			insertParam := &data.InsertParam{
+				Tx:        tgtTx,
+				Table:     cfg.Target.Table,
+				Columns:   resp.Insert.Columns,
+				Values:    resp.Insert.Values,
+				ValueList: resp.Insert.ValueList,
+			}
+
+			var where *string
+			if orderBy == "" {
+				where = resp.Delete.Where
+			} else {
+				where = &cfg.Source.Where
+			}
+			deleteParam := &data.DeleteParam{
+				Tx:        srcTx,
+				Table:     cfg.Source.Table,
+				Where:     where,
+				OrderBy:   orderBy,
+				Limit:     cfg.Source.Limit,
+				ValueList: resp.Delete.ValueList,
+			}
+
 			var (
-				waitGrp    sync.WaitGroup
-				errs       []string
-				rowQty     = make(chan int64, 1)
-				qtyMatched = make(chan bool, 1)
-				committed  = make(chan bool, 1)
+				wg      = new(sync.WaitGroup)
+				inserts int64
+				deletes int64
+				errs    []string
 			)
+			wg.Add(1)
+			go func(wg *sync.WaitGroup, param *data.InsertParam, inserts *int64, errs *[]string) {
+				defer wg.Done()
+				rowsAffected, e := data.InsertRows(param)
+				if e != nil {
+					*errs = append(*errs, e.Error())
+					return
+				}
+				*inserts = rowsAffected
+				return
+			}(wg, insertParam, &inserts, &errs)
 
-			waitGrp.Add(1)
-			go func() {
-				defer waitGrp.Done()
-				tgtTx, e1 := tgtDB.Begin()
-				if e1 != nil {
-					errs = append(errs, e1.Error())
+			wg.Add(1)
+			go func(wg *sync.WaitGroup, param *data.DeleteParam, deletes *int64, errs *[]string) {
+				defer wg.Done()
+				rowsAffected, e := data.DeleteRows(param)
+				if e != nil {
+					*errs = append(*errs, e.Error())
 					return
 				}
-				param := &data.InsertParam{
-					Tx:        tgtTx,
-					Table:     cfg.Target.Table,
-					Columns:   resp.Insert.Columns,
-					Values:    resp.Insert.Values,
-					ValueList: resp.Insert.ValueList,
-				}
-				inserts, e2 := data.InsertRows(param)
-				if e2 != nil {
-					errs = append(errs, e2.Error())
-					return
-				}
-				// 1. 把插入的行的数量通知给 src 事务
-				rowQty <- inserts
-				// 4. 拿到 src 事务中行数匹配的结果
-				ok := <-qtyMatched
-				if !ok {
-					return
-				}
-				// 5. 提交事务，把结果通知给 src 事务
-				if e2 = tgtTx.Commit(); e2 != nil {
-					committed <- false
-					errs = append(errs, e2.Error())
-					return
-				}
-				committed <- true
-				rowsInsert += inserts
-			}()
+				*deletes = rowsAffected
+			}(wg, deleteParam, &deletes, &errs)
 
-			waitGrp.Add(1)
-			go func() {
-				defer waitGrp.Done()
-				srcTx, e1 := srcDB.Begin()
-				if e1 != nil {
-					errs = append(errs, e1.Error())
-					return
-				}
-				var where *string
-				if orderBy == "" {
-					where = resp.Delete.Where
-				} else {
-					where = &cfg.Source.Where
-				}
-				param := &data.DeleteParam{
-					Tx:        srcTx,
-					Table:     cfg.Source.Table,
-					Where:     where,
-					OrderBy:   orderBy,
-					Limit:     cfg.Source.Limit,
-					ValueList: resp.Delete.ValueList,
-				}
-				deletes, e2 := data.DeleteRows(param)
-				if e2 != nil {
-					errs = append(errs, e2.Error())
-					return
-				}
-				// 2. 拿到 tgt 事务里插入的行的数量
-				inserts := <-rowQty
-				// 3. 判断行数是否匹配，将结果通知给 tgt 事务
-				if inserts < deletes {
-					qtyMatched <- false
-					errs = append(errs, fmt.Sprintf("rows deleted(%d) larger than inserted(%d), rollback and exit", deletes, inserts))
-					return
-				}
-				qtyMatched <- true
-				// 6. 拿到 tgt 事务的提交状态
-				ok := <-committed
-				if !ok {
-					return
-				}
-				if e2 = srcTx.Commit(); e2 != nil {
-					errs = append(errs, e2.Error())
-					return
-				}
-				rowsDelete += deletes
-			}()
-
-			waitGrp.Wait()
+			wg.Wait()
 
 			if len(errs) != 0 {
 				err = fmt.Errorf(strings.Join(errs, "\n"))
 				return
 			}
+			if inserts < deletes {
+				err = fmt.Errorf("rows deleted(%d) larger than inserted(%d), rollback and exit", deletes, inserts)
+				return
+			}
+
+			if err = tgtTx.Commit(); err != nil {
+				return
+			}
+			rowsInsert += inserts
+
+			if err = srcTx.Commit(); err != nil {
+				return
+			}
+			rowsDelete += deletes
 
 			if resp.Rows < cfg.Source.Limit {
 				break L
@@ -251,35 +236,8 @@ L:
 		return
 	}
 
-	statistics := `
-{
-    "time": {
-        "begin": "%s",
-        "finish": "%s",
-        "duration": "%s"
-    },
-    "source": {
-        "address": "%s",
-        "database": "%s",
-        "table": "%s",
-        "charset": "%s"
-    },
-    "target": {
-        "address": "%s",
-        "database": "%s",
-        "table": "%s",
-        "charset": "%s"
-    },
-    "action": {
-        "select": %d,
-        "insert": %d,
-        "delete": %d
-    }
-}
-
-`
 	fmt.Printf(
-		statistics,
+		config.StatisticsTemplate,
 		sTime.Format(config.TimeFormat), eTime.Format(config.TimeFormat), eTime.Sub(sTime).Truncate(time.Second).String(),
 		cfg.Source.Address, cfg.Source.Database, cfg.Source.Table, cfg.Source.Charset,
 		cfg.Target.Address, cfg.Target.Database, cfg.Target.Table, cfg.Target.Charset,
