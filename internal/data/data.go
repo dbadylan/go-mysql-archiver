@@ -23,7 +23,7 @@ func NewDB(m config.MySQL) (db *sql.DB, err error) {
 }
 
 func Explain(db *sql.DB, table string, where string) (keyName string, rowsEstimate int64, err error) {
-	query := fmt.Sprintf("EXPLAIN /* go-archiver */ SELECT * FROM `%s`", table)
+	query := fmt.Sprintf("EXPLAIN /* go-archiver */ SELECT 1 FROM `%s`", table)
 	if where != "" {
 		query += " WHERE " + where
 	}
@@ -89,7 +89,7 @@ type Property struct {
 func GetKeys(db *sql.DB, database string, table string) (keys Keys, err error) {
 	query := `SELECT /* go-archiver */ INDEX_NAME, CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', COLUMN_NAME, '"') ORDER BY SEQ_IN_INDEX), ']'), JSON), MAX(NON_UNIQUE) c, MAX(NULLABLE), MAX(CARDINALITY)
 FROM information_schema.STATISTICS
-WHERE INDEX_TYPE = 'BTREE' AND IS_VISIBLE = 'YES' AND TABLE_SCHEMA = ? AND TABLE_NAME = ?
+WHERE INDEX_TYPE = 'BTREE' AND TABLE_SCHEMA = ? AND TABLE_NAME = ?
 GROUP BY INDEX_NAME ORDER BY c DESC`
 	var rows *sql.Rows
 	if rows, err = db.Query(query, database, table); err != nil {
