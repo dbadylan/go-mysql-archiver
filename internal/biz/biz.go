@@ -29,28 +29,10 @@ func Run(cfg *config.Config) (err error) {
 	}
 	defer func() { _ = tgtDB.Close() }()
 
-	keyName, rowsEstimated, e3 := data.Explain(srcDB, cfg.Source.Table, cfg.Source.Where)
+	analysis, e3 := data.AnalyzeQuery(srcDB, cfg.Source.Database, cfg.Source.Table, cfg.Source.Where)
 	if e3 != nil {
 		err = e3
 		return
-	}
-	keys, e4 := data.GetKeys(srcDB, cfg.Source.Database, cfg.Source.Table)
-	if e4 != nil {
-		err = e4
-		return
-	}
-	if keyName == "" {
-		keyName = keys.Elected
-	}
-	var orderBy string
-	keyColumns := make(map[string]struct{})
-	if detail, exist := keys.Details[keyName]; exist {
-		var columnNames []string
-		for _, columnName := range detail.ColumnNames {
-			keyColumns[columnName] = struct{}{}
-			columnNames = append(columnNames, fmt.Sprintf("`%s`", columnName))
-		}
-		orderBy = strings.Join(columnNames, ", ")
 	}
 
 	var rowsSelect int64
@@ -63,7 +45,7 @@ func Run(cfg *config.Config) (err error) {
 			for {
 				select {
 				case ts := <-ticker.C:
-					fmt.Printf("[%s] progress: %d/%d\n", ts.Local().Format(config.TimeFormat), rowsSelect, rowsEstimated)
+					fmt.Printf("[%s] progress: %d/%d\n", ts.Local().Format(config.TimeFormat), rowsSelect, analysis.RowsEstimated)
 				case <-exitChan:
 					return
 				}
@@ -118,12 +100,11 @@ L:
 			break L
 		default:
 			selectParam := &data.SelectParam{
-				DB:         srcDB,
-				Table:      cfg.Source.Table,
-				Where:      cfg.Source.Where,
-				OrderBy:    orderBy,
-				Limit:      cfg.Source.Limit,
-				KeyColumns: keyColumns,
+				DB:       srcDB,
+				Table:    cfg.Source.Table,
+				Where:    cfg.Source.Where,
+				Limit:    cfg.Source.Limit,
+				Analysis: analysis,
 			}
 			resp, e1 := data.SelectRows(selectParam)
 			if e1 != nil {
@@ -153,20 +134,13 @@ L:
 				Values:    resp.Insert.Values,
 				ValueList: resp.Insert.ValueList,
 			}
-
-			var where *string
-			if orderBy == "" {
-				where = resp.Delete.Where
-			} else {
-				where = &cfg.Source.Where
-			}
 			deleteParam := &data.DeleteParam{
 				Tx:        srcTx,
 				Table:     cfg.Source.Table,
-				Where:     where,
-				OrderBy:   orderBy,
+				Where:     resp.Delete.Where,
 				Limit:     cfg.Source.Limit,
 				ValueList: resp.Delete.ValueList,
+				Analysis:  analysis,
 			}
 
 			var (
