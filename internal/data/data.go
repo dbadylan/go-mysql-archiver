@@ -222,14 +222,14 @@ type Delete struct {
 	ValueList *[]interface{}
 }
 
-type SelectResponse struct {
+type SelectResp struct {
 	Insert Insert
 	Delete Delete
 
 	Rows int64
 }
 
-func SelectRows(param *SelectParam) (resp *SelectResponse, err error) {
+func SelectRows(param *SelectParam) (resp *SelectResp, err error) {
 	query := fmt.Sprintf("SELECT /* go-archiver */ * FROM `%s`", param.Table)
 	if param.Where != "" {
 		query += " WHERE " + param.Where
@@ -245,28 +245,20 @@ func SelectRows(param *SelectParam) (resp *SelectResponse, err error) {
 	}
 	defer func() { _ = rows.Close() }()
 
-	resp = new(SelectResponse)
+	resp = new(SelectResp)
 
 	var columns []string
 	if columns, err = rows.Columns(); err != nil {
 		return
 	}
+	resp.Insert.Columns = "`" + strings.Join(columns, "`, `") + "`"
 
 	allColQty := len(columns)
 	allColMaxIdx := allColQty - 1
 	dest := make([]interface{}, allColQty)
-	var columnBuf bytes.Buffer
 	for i := 0; i < allColQty; i++ {
 		dest[i] = new([]byte)
-		columnName := columns[i]
-		columnBuf.WriteString("`")
-		columnBuf.WriteString(columnName)
-		columnBuf.WriteString("`")
-		if i != allColMaxIdx {
-			columnBuf.WriteString(", ")
-		}
 	}
-	resp.Insert.Columns = columnBuf.String()
 
 	var keyValueMaxLen int64
 	switch param.Analysis.QueryType {
@@ -277,8 +269,8 @@ func SelectRows(param *SelectParam) (resp *SelectResponse, err error) {
 	}
 
 	var (
-		valuesSubClauses []string
-		whereSubClauses  []string
+		valuesSubClauses = make([]string, 0, param.Limit)
+		whereSubClauses  = make([]string, 0, param.Limit)
 		allValueList     = make([]interface{}, 0, param.Limit*int64(allColQty))
 		keyValueList     = make([]interface{}, 0, keyValueMaxLen)
 	)
@@ -289,7 +281,7 @@ func SelectRows(param *SelectParam) (resp *SelectResponse, err error) {
 
 		var (
 			valuesSubClauseBuf bytes.Buffer
-			columnExpressions  []string
+			columnExpressions  = make([]string, allColQty)
 		)
 		valuesSubClauseBuf.WriteString("(")
 		for i := 0; i < allColQty; i++ {
@@ -314,16 +306,16 @@ func SelectRows(param *SelectParam) (resp *SelectResponse, err error) {
 				colExprBuf.WriteString(columns[i])
 				colExprBuf.WriteString("` ")
 				colExprBuf.WriteString(operator)
-				columnExpressions = append(columnExpressions, colExprBuf.String())
+				columnExpressions[i] = colExprBuf.String()
 			}
 		}
 
 		switch param.Analysis.QueryType {
 		case 1:
-			var placeholders []string
-			for _, position := range param.Analysis.Positions {
+			placeholders := make([]string, len(param.Analysis.Positions))
+			for index, position := range param.Analysis.Positions {
 				keyValueList = append(keyValueList, allValueList[int64(allColQty)*resp.Rows+int64(position)])
-				placeholders = append(placeholders, "?")
+				placeholders[index] = "?"
 			}
 			whereSubClauses = append(whereSubClauses, "("+strings.Join(placeholders, ", ")+")")
 		case 3:
