@@ -43,31 +43,34 @@ go build
 
 ## 性能比对
 
-参数
+工具参数：
 
-|       | pt-archiver                                                                   | go-archiver                                     |
-|-------|-------------------------------------------------------------------------------|-------------------------------------------------|
-| 全表归档  | --limit 2000<br />--bulk-insert<br />--bulk-delete<br />--where '1 = 1'       | --src-limit 2000                                |
-| 按条件归档 | --limit 2000<br />--bulk-insert<br />--bulk-delete<br />--where 'k < 2510000' | --src-limit 2000<br />--src-where 'k < 2510000' |
+| pt-archiver                                                             | go-archiver      |
+|-------------------------------------------------------------------------|------------------|
+| --limit 2000<br />--bulk-insert<br />--bulk-delete<br />--where '1 = 1' | --src-limit 2000 |
 
-### 全表归档
+对象信息：
+
+使用 `sysbench` 创建测试表和数据，总行数 500 万。
+
+### 有主键或非空唯一索引
 
 pt-archiver
 
 ```
-Started at 2024-05-16T17:14:02, ended at 2024-05-16T17:19:24
+Started at 2024-05-20T14:10:17, ended at 2024-05-20T14:15:40
 Source: A=utf8,D=sysbench,P=3306,h=172.16.0.1,p=...,t=sbtest1,u=root
 Dest:   A=utf8,D=sysbench,P=3306,h=172.16.0.2,p=...,t=sbtest1,u=root
 SELECT 5000000
 INSERT 5000000
 DELETE 5000000
 Action              Count       Time        Pct
-bulk_inserting       2500    85.6934      26.68
-bulk_deleting        2500    51.6852      16.09
-commit               5000    16.0724       5.00
-select               2501    11.5496       3.60
-print_bulkfile    5000000   -15.4340      -4.80
-other                   0   171.6598      53.44
+bulk_inserting       2500    84.7472      26.22
+bulk_deleting        2500    51.8502      16.04
+commit               5002    16.2668       5.03
+select               2501    11.7352       3.63
+print_bulkfile    5000000   -15.4795      -4.79
+other                   0   174.1063      53.87
 ```
 
 go-archiver
@@ -75,9 +78,9 @@ go-archiver
 ```
 {
     "time": {
-        "begin": "2024-05-16 17:28:37",
-        "finish": "2024-05-16 17:31:13",
-        "duration": "2m35s"
+        "begin": "2024-05-20 14:17:59",
+        "finish": "2024-05-20 14:20:34",
+        "duration": "2m34s"
     },
     "instance": {
         "source": {
@@ -101,24 +104,24 @@ go-archiver
 }
 ```
 
-### 按条件归档
+### 只有普通索引
 
 pt-archiver
 
 ```
-Started at 2024-05-16T18:57:13, ended at 2024-05-16T19:00:22
+Started at 2024-05-20T14:24:35, ended at 2024-05-20T14:30:45
 Source: A=utf8,D=sysbench,P=3306,h=172.16.0.1,p=...,t=sbtest1,u=root
 Dest:   A=utf8,D=sysbench,P=3306,h=172.16.0.2,p=...,t=sbtest1,u=root
-SELECT 2885879
-INSERT 2885879
-DELETE 2885879
+SELECT 5000000
+INSERT 5000000
+DELETE 5000000
 Action              Count       Time        Pct
-bulk_inserting       1443    46.4956      24.60
-bulk_deleting        1443    33.1145      17.52
-commit               2886     9.3321       4.94
-select               1444     8.0295       4.25
-print_bulkfile    2885879    -8.5681      -4.53
-other                   0   100.6093      53.23
+bulk_deleting        2500    86.6232      23.36
+bulk_inserting       2500    71.7427      19.35
+select               2501    34.6001       9.33
+commit               5002    17.1650       4.63
+print_bulkfile    5000000   -15.3862      -4.15
+other                   0   176.0144      47.47
 ```
 
 go-archiver
@@ -126,9 +129,9 @@ go-archiver
 ```
 {
     "time": {
-        "begin": "2024-05-16 19:14:43",
-        "finish": "2024-05-16 19:16:42",
-        "duration": "1m58s"
+        "begin": "2024-05-20 14:32:19",
+        "finish": "2024-05-20 14:35:04",
+        "duration": "2m44s"
     },
     "instance": {
         "source": {
@@ -145,9 +148,48 @@ go-archiver
         }
     },
     "action": {
-        "select": 2885879,
-        "insert": 2885879,
-        "delete": 2885879
+        "select": 5000000,
+        "insert": 5000000,
+        "delete": 5000000
+    }
+}
+```
+
+### 无任何索引
+
+pt-archiver
+
+```
+Cannot find an ascendable index in table at /usr/local/bin/pt-archiver line 3261.
+```
+
+go-archiver
+
+```
+{
+    "time": {
+        "begin": "2024-05-20 14:37:30",
+        "finish": "2024-05-20 14:52:30",
+        "duration": "14m59s"
+    },
+    "instance": {
+        "source": {
+            "address": "172.16.0.1:3306",
+            "database": "sysbench",
+            "table": "sbtest1",
+            "charset": "utf8"
+        },
+        "target": {
+            "address": "172.16.0.2:3306",
+            "database": "sysbench",
+            "table": "sbtest1",
+            "charset": "utf8"
+        }
+    },
+    "action": {
+        "select": 5000000,
+        "insert": 5000000,
+        "delete": 5000000
     }
 }
 ```
