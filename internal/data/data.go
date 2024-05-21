@@ -76,7 +76,9 @@ func explain(db *sql.DB, table string, where string) (keyName string, rowsEstima
 	return
 }
 
-func getUniqueKey(db *sql.DB, database string, table string) (exist bool, columns []string, positions []int, err error) {
+// getOneUniqueKey
+//  try to get a non-nullable unique key, include primary key
+func getOneUniqueKey(db *sql.DB, database string, table string) (exist bool, columns []string, positions []int, err error) {
 	query := `SELECT /* go-archiver */ CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', c.COLUMN_NAME, '"') ORDER BY s.SEQ_IN_INDEX), ']'), JSON) columns, CONVERT(CONCAT('[', GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY s.SEQ_IN_INDEX), ']'), JSON) positions, MAX(NON_UNIQUE) non_unique, MAX(NULLABLE) nullable, MAX(CARDINALITY) cardinality
 FROM information_schema.STATISTICS s
 JOIN information_schema.COLUMNS c
@@ -106,7 +108,7 @@ LIMIT 1`
 	return
 }
 
-func getOtherKey(db *sql.DB, database string, table string) (exist bool, columns []string, positions []int, err error) {
+func getOneKey(db *sql.DB, database string, table string) (exist bool, columns []string, positions []int, err error) {
 	query := `SELECT /* go-archiver */ CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', c.COLUMN_NAME, '"') ORDER BY SEQ_IN_INDEX), ']'), JSON) columns, CONVERT(CONCAT('[', GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY s.SEQ_IN_INDEX), ']'), JSON) positions, MAX(CARDINALITY) cardinality
 FROM information_schema.STATISTICS s
 JOIN information_schema.COLUMNS c
@@ -174,7 +176,7 @@ func AnalyzeQuery(db *sql.DB, database string, table string, where string) (anal
 	if keyName, analysis.RowsEstimated, err = explain(db, table, where); err != nil {
 		return
 	}
-	if exist, analysis.Columns, analysis.Positions, err = getUniqueKey(db, database, table); err != nil {
+	if exist, analysis.Columns, analysis.Positions, err = getOneUniqueKey(db, database, table); err != nil {
 		return
 	}
 	if exist {
@@ -192,7 +194,7 @@ func AnalyzeQuery(db *sql.DB, database string, table string, where string) (anal
 		return
 	}
 F:
-	if exist, analysis.Columns, analysis.Positions, err = getOtherKey(db, database, table); err != nil {
+	if exist, analysis.Columns, analysis.Positions, err = getOneKey(db, database, table); err != nil {
 		return
 	}
 	if exist {
