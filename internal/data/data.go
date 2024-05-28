@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/dbadylan/go-archiver/internal/config"
+	"github.com/dbadylan/go-mysql-archiver/internal/config"
 
 	_ "github.com/go-sql-driver/mysql"
 )
@@ -24,7 +24,7 @@ func NewDB(m config.MySQL) (db *sql.DB, err error) {
 }
 
 func explain(db *sql.DB, table string, where string) (keyName string, rowsEstimate int64, err error) {
-	query := fmt.Sprintf("EXPLAIN /* go-archiver */ SELECT 1 FROM `%s`", table)
+	query := fmt.Sprintf("EXPLAIN /* go-mysql-archiver */ SELECT 1 FROM `%s`", table)
 	if where != "" {
 		query += " WHERE " + where
 	}
@@ -79,7 +79,7 @@ func explain(db *sql.DB, table string, where string) (keyName string, rowsEstima
 // getOneUniqueKey
 //  try to get a non-nullable unique key, include primary key
 func getOneUniqueKey(db *sql.DB, database string, table string) (exist bool, columns []string, positions []int, err error) {
-	query := `SELECT /* go-archiver */ CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', c.COLUMN_NAME, '"') ORDER BY s.SEQ_IN_INDEX), ']'), JSON) columns, CONVERT(CONCAT('[', GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY s.SEQ_IN_INDEX), ']'), JSON) positions, MAX(NON_UNIQUE) non_unique, MAX(NULLABLE) nullable, MAX(CARDINALITY) cardinality
+	query := `SELECT /* go-mysql-archiver */ CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', c.COLUMN_NAME, '"') ORDER BY s.SEQ_IN_INDEX), ']'), JSON) columns, CONVERT(CONCAT('[', GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY s.SEQ_IN_INDEX), ']'), JSON) positions, MAX(NON_UNIQUE) non_unique, MAX(NULLABLE) nullable, MAX(CARDINALITY) cardinality
 FROM information_schema.STATISTICS s
 JOIN information_schema.COLUMNS c
 ON s.TABLE_SCHEMA = c.TABLE_SCHEMA AND s.TABLE_NAME = c.TABLE_NAME AND s.COLUMN_NAME = c.COLUMN_NAME
@@ -109,7 +109,7 @@ LIMIT 1`
 }
 
 func getOneKey(db *sql.DB, database string, table string) (exist bool, columns []string, positions []int, err error) {
-	query := `SELECT /* go-archiver */ CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', c.COLUMN_NAME, '"') ORDER BY SEQ_IN_INDEX), ']'), JSON) columns, CONVERT(CONCAT('[', GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY s.SEQ_IN_INDEX), ']'), JSON) positions, MAX(CARDINALITY) cardinality
+	query := `SELECT /* go-mysql-archiver */ CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', c.COLUMN_NAME, '"') ORDER BY SEQ_IN_INDEX), ']'), JSON) columns, CONVERT(CONCAT('[', GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY s.SEQ_IN_INDEX), ']'), JSON) positions, MAX(CARDINALITY) cardinality
 FROM information_schema.STATISTICS s
 JOIN information_schema.COLUMNS c
 ON s.TABLE_SCHEMA = c.TABLE_SCHEMA AND s.TABLE_NAME = c.TABLE_NAME AND s.COLUMN_NAME = c.COLUMN_NAME
@@ -137,7 +137,7 @@ LIMIT 1`
 }
 
 func getKeyByName(db *sql.DB, database string, table string, key string) (exist bool, columns []string, positions []int, err error) {
-	query := `SELECT /* go-archiver */ CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', c.COLUMN_NAME, '"') ORDER BY SEQ_IN_INDEX), ']'), JSON) columns, CONVERT(CONCAT('[', GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY s.SEQ_IN_INDEX), ']'), JSON) positions
+	query := `SELECT /* go-mysql-archiver */ CONVERT(CONCAT('[', GROUP_CONCAT(CONCAT('"', c.COLUMN_NAME, '"') ORDER BY SEQ_IN_INDEX), ']'), JSON) columns, CONVERT(CONCAT('[', GROUP_CONCAT(c.ORDINAL_POSITION-1 ORDER BY s.SEQ_IN_INDEX), ']'), JSON) positions
 FROM information_schema.STATISTICS s
 JOIN information_schema.COLUMNS c
 ON s.TABLE_SCHEMA = c.TABLE_SCHEMA AND s.TABLE_NAME = c.TABLE_NAME AND s.COLUMN_NAME = c.COLUMN_NAME
@@ -232,7 +232,7 @@ type SelectResp struct {
 }
 
 func SelectRows(param *SelectParam) (resp *SelectResp, err error) {
-	query := fmt.Sprintf("SELECT /* go-archiver */ * FROM `%s`", param.Table)
+	query := fmt.Sprintf("SELECT /* go-mysql-archiver */ * FROM `%s`", param.Table)
 	if param.Where != "" {
 		query += " WHERE " + param.Where
 	}
@@ -359,7 +359,7 @@ type InsertParam struct {
 }
 
 func InsertRows(param *InsertParam) (rowsAffected int64, err error) {
-	query := fmt.Sprintf("INSERT /* go-archiver */ INTO `%s` (%s) VALUES %s", param.Table, param.Columns, *param.Values)
+	query := fmt.Sprintf("INSERT /* go-mysql-archiver */ INTO `%s` (%s) VALUES %s", param.Table, param.Columns, *param.Values)
 	var result sql.Result
 	if result, err = param.Tx.Exec(query, *param.ValueList...); err != nil {
 		return
@@ -378,7 +378,7 @@ type DeleteParam struct {
 }
 
 func DeleteRows(param *DeleteParam) (rowsAffected int64, err error) {
-	query := fmt.Sprintf("DELETE /* go-archiver */ FROM `%s`", param.Table)
+	query := fmt.Sprintf("DELETE /* go-mysql-archiver */ FROM `%s`", param.Table)
 	if *param.Where != "" {
 		query += fmt.Sprintf(" WHERE %s", *param.Where)
 	}

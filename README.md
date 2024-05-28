@@ -1,4 +1,4 @@
-# go-archiver
+# go-mysql-archiver
 
 ## 背景
 
@@ -17,8 +17,8 @@
 ## 编译
 
 ```shell
-git clone https://github.com/dbadylan/go-archiver.git
-cd go-archiver/cmd/archiver/
+git clone https://github.com/dbadylan/go-mysql-archiver.git
+cd go-mysql-archiver/cmd/archiver/
 go build
 ./archiver -h
 ```
@@ -47,9 +47,9 @@ go build
 
 工具参数：
 
-| pt-archiver                                                             | go-archiver      |
-|-------------------------------------------------------------------------|------------------|
-| --limit 2000<br />--bulk-insert<br />--bulk-delete<br />--where '1 = 1' | --src-limit 2000 |
+| pt-archiver                                                             | go-mysql-archiver |
+|-------------------------------------------------------------------------|-------------------|
+| --limit 2000<br />--bulk-insert<br />--bulk-delete<br />--where '1 = 1' | --src-limit 2000  |
 
 表和数据：
 
@@ -75,7 +75,7 @@ print_bulkfile    5000000   -15.4795      -4.79
 other                   0   174.1063      53.87
 ```
 
-go-archiver
+go-mysql-archiver
 
 ```
 {
@@ -130,7 +130,7 @@ print_bulkfile    5000000   -15.3862      -4.15
 other                   0   176.0144      47.47
 ```
 
-go-archiver
+go-mysql-archiver
 
 ```
 {
@@ -173,7 +173,7 @@ pt-archiver
 Cannot find an ascendable index in table at /usr/local/bin/pt-archiver line 3261.
 ```
 
-go-archiver
+go-mysql-archiver
 
 ```
 {
@@ -219,4 +219,3 @@ echo pause | nc -U /tmp/172.16.0.1:3306-sysbench-sbtest1.sock
 ```shell
 echo resume | nc -U /tmp/172.16.0.1:3306-sysbench-sbtest1.sock
 ```
-
