@@ -66,6 +66,7 @@ type Config struct {
 	Statistics bool
 	Memory     int64
 	RunTime    time.Duration
+	Socket     string
 }
 
 func NewFlag() (cfg *Config, err error) {
@@ -90,6 +91,7 @@ func NewFlag() (cfg *Config, err error) {
 	statistics := flag.Bool("statistics", false, "print statistics after task has finished")
 	memory := flag.Int64("memory", 0, "max memory usage in bytes, if unspecified, it means unlimited")
 	runTime := flag.Duration("run-time", 0, "time to run before exiting, such as 600s, 120m, 5h30m15s, etc")
+	socket := flag.String("socket", "", "unix socket file path")
 
 	flag.Parse()
 
@@ -165,6 +167,7 @@ func NewFlag() (cfg *Config, err error) {
 		Statistics: *statistics,
 		Memory:     *memory,
 		RunTime:    *runTime,
+		Socket:     *socket,
 	}
 
 	return

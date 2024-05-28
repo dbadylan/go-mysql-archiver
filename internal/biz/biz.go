@@ -2,6 +2,7 @@ package biz
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"runtime"
 	"strings"
@@ -34,6 +35,58 @@ func Run(cfg *config.Config) (err error) {
 		err = e3
 		return
 	}
+
+	socketFile := cfg.Socket
+	if socketFile == "" {
+		socketFile = fmt.Sprintf("/tmp/%s-%s-%s.sock", cfg.Source.Address, cfg.Source.Database, cfg.Source.Table)
+	}
+	listener, e4 := net.Listen("unix", socketFile)
+	if e4 != nil {
+		err = e4
+		return
+	}
+	defer func() {
+		_ = listener.Close()
+		_ = os.Remove(socketFile)
+	}()
+	var (
+		pause  bool
+		resume = make(chan struct{}, 1)
+	)
+	go func() {
+		for {
+			conn, e1 := listener.Accept()
+			if e1 != nil {
+				return
+			}
+			buf := make([]byte, 128)
+			n, e2 := conn.Read(buf)
+			if e2 != nil {
+				fmt.Println(e2.Error())
+				continue
+			}
+			cmd := strings.TrimSpace(string(buf[:n]))
+			var response string
+			switch cmd {
+			case "pause":
+				response = "task has been paused\n"
+				pause = true
+			case "resume":
+				response = "task will be resumed\n"
+				if pause {
+					pause = false
+					resume <- struct{}{}
+				}
+			default:
+				response = "unknown command\n"
+			}
+			if _, e2 = conn.Write([]byte(response)); e2 != nil {
+				fmt.Println(e2.Error())
+				continue
+			}
+			_ = conn.Close()
+		}
+	}()
 
 	var rowsSelect int64
 	if cfg.Progress != 0 {
@@ -197,10 +250,15 @@ L:
 				break L
 			}
 
-			if cfg.Sleep == 0 {
+			if pause {
+				<-resume
 				continue
 			}
-			<-sleep.C
+
+			if cfg.Sleep != 0 {
+				<-sleep.C
+				continue
+			}
 		}
 	}
 

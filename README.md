@@ -4,11 +4,13 @@
 
 该项目是 [`pt-archiver`](https://docs.percona.com/percona-toolkit/pt-archiver.html) 的 go 语言实现版本，其优点有：
 
-* 不使用 `LOAD DATA`，云数据库产品或无法开启 `local_infile` 的实例均可使用
-* 支持 MySQL 协议的目标端，理论上都能进行写入
-* 性能有所提高，详见下方数据比对
+* 不依赖于 `LOAD DATA`
+  - 云数据库产品或无法开启 `local_infile` 的实例均可使用
+  - 支持 MySQL 协议的目标端，理论上都能写入
+  - 不再有字符集兼容性问题
+* 性能有所提高（详见下方数据比对）
 * 支持无索引的表
-* 不同字符集的兼容性较好
+* 可手动暂停与恢复
 
 目前核心功能已完成，更多额外特性在逐步迭代中。
 
@@ -49,9 +51,9 @@ go build
 |-------------------------------------------------------------------------|------------------|
 | --limit 2000<br />--bulk-insert<br />--bulk-delete<br />--where '1 = 1' | --src-limit 2000 |
 
-对象信息：
+表和数据：
 
-使用 `sysbench` 创建测试表和数据，总行数 500 万。
+使用 `sysbench` 创建测试表，总记录数 500 万。
 
 ### 有主键或非空唯一索引
 
@@ -106,6 +108,10 @@ go-archiver
 
 ### 只有普通索引
 
+```sql
+ALTER TABLE `sbtest1` MODIFY `id` INT NOT NULL DEFAULT 0, DROP PRIMARY KEY; -- 删除主键
+```
+
 pt-archiver
 
 ```
@@ -157,6 +163,10 @@ go-archiver
 
 ### 无任何索引
 
+```sql
+ALTER TABLE `sbtest1` DROP KEY `k_1`; -- 删除普通索引
+```
+
 pt-archiver
 
 ```
@@ -193,3 +203,20 @@ go-archiver
     }
 }
 ```
+
+## 任务控制
+
+> socket 文件名与路径可由 `socket` 参数自定义，默认为 /tmp/${src-address}-${src-database}-${src-table}.sock
+
+### 暂停
+
+```shell
+echo pause | nc -U /tmp/172.16.0.1:3306-sysbench-sbtest1.sock
+```
+
+### 恢复
+
+```shell
+echo resume | nc -U /tmp/172.16.0.1:3306-sysbench-sbtest1.sock
+```
+

@@ -10,11 +10,11 @@ import (
 func main() {
 	cfg, err := config.NewFlag()
 	if err != nil {
-		fmt.Println(err.Error())
+		fmt.Println(err)
 		return
 	}
 	if err = biz.Run(cfg); err != nil {
-		fmt.Println(err.Error())
+		fmt.Println(err)
 		return
 	}
 }
