@@ -1,16 +1,15 @@
 # go-mysql-archiver
 
-## 背景
-
-该项目是 [`pt-archiver`](https://docs.percona.com/percona-toolkit/pt-archiver.html) 的 go 语言实现版本，其优点有：
+用 go 语言实现的 MySQL 数据归档工具，与 [`pt-archiver`](https://docs.percona.com/percona-toolkit/pt-archiver.html) 相比，其优点有：
 
 * 不依赖于 `LOAD DATA`
   - 云数据库产品或无法开启 `local_infile` 的实例均可使用
-  - 支持 MySQL 协议的目标端，理论上都能写入
+  - 支持 MySQL 协议的目标端，理论上都可写入
   - 不再有字符集兼容性问题
 * 性能有所提高（详见下方数据比对）
 * 支持无索引的表
-* 可手动暂停与恢复
+* 支持对内存使用量的监控与限制
+* 支持对任务进行暂停与恢复
 
 目前核心功能已完成，更多额外特性在逐步迭代中。
 
